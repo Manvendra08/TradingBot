@@ -78,12 +78,22 @@ def _build_state_text(
         if sentiment:
             parts.append(f"Sentiment: {sentiment}")
 
-    t1h = scan_context.get("trend_1h") or (intel or {}).get("trend_1h")
-    t3h = scan_context.get("trend_3h") or (intel or {}).get("trend_3h")
-    if t1h:
-        parts.append(f"1H trend: {t1h}")
-    if t3h:
-        parts.append(f"3H trend: {t3h}")
+    regime = (
+        scan_context.get("market_regime")
+        or scan_context.get("regime")
+        or (intel or {}).get("market_regime")
+    )
+    if regime:
+        parts.append(f"Market regime: {regime}")
+
+    pct_chg = scan_context.get("price_change_pct")
+    if pct_chg is None and intel:
+        pct_chg = intel.get("price_change_pct")
+    if pct_chg is not None:
+        try:
+            parts.append(f"Session move: {float(pct_chg):+.2f}%")
+        except (TypeError, ValueError):
+            pass
 
     diagnostics = scan_context.get("diagnostics") or {}
     max_oi = diagnostics.get("max_oi_delta_pct")
@@ -110,9 +120,33 @@ def _build_state_text(
                 f"Breadth: {cs.get('direction', 'MIXED')} ({cs.get('sentiment_score', 0.0):+.2f})"
             )
     else:
-        # Commodities retain news evaluation
-        if news_data and not (news_data or {}).get("bypassed"):
-            headlines = news_data.get("headlines") or news_data.get("articles") or []
+        # Commodities retain cached news evaluation
+        effective_news = news_data
+        if (not effective_news or effective_news.get("news_score_current") is None) and base_sym in {
+            "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"
+        }:
+            try:
+                from src.services.news_worker import get_cached_news_sentiment
+                cached = get_cached_news_sentiment(base_sym)
+                if cached:
+                    effective_news = {**(effective_news or {}), **cached}
+            except Exception:
+                pass
+        if effective_news and not effective_news.get("bypassed"):
+            news_score = effective_news.get("news_score_current")
+            news_dir = effective_news.get("current_news_direction")
+            if news_score is not None:
+                try:
+                    dir_suffix = f" ({news_dir})" if news_dir else ""
+                    parts.append(f"MCX news score: {float(news_score):+.3f}{dir_suffix}")
+                except (TypeError, ValueError):
+                    pass
+            headlines = (
+                effective_news.get("items")
+                or effective_news.get("headlines")
+                or effective_news.get("articles")
+                or []
+            )
             if headlines:
                 top = headlines[0]
                 title = top.get("title") or top.get("headline") or str(top)

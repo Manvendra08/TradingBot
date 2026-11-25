@@ -26,6 +26,7 @@ from src.alerts.digest import (
     _format_trade_status,
     _oi_buildup_label,
 )
+from src.engine.confidence_threshold import get_effective_mcx_confidence_floor
 from src.engine.ng_macro_context import get_active_ng_macro_context
 
 MCX_CONFIDENCE_FLOOR = 72
@@ -58,7 +59,8 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
     except (ValueError, TypeError):
         conf_num = 0.0
 
-    is_sub_threshold = conf_num < MCX_CONFIDENCE_FLOOR
+    mcx_floor = get_effective_mcx_confidence_floor(sym, default_floor=MCX_CONFIDENCE_FLOOR)
+    is_sub_threshold = conf_num < mcx_floor
 
     lines: list[str] = []
     DIV = "───────────────"
@@ -112,8 +114,8 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
     elif is_holding:
         trade_status_str = "🔵 *HOLDING*"
     elif is_sub_threshold and not is_entered:
-        # Enforce MCX 72% confidence floor on status badge
-        trade_status_str = f"⏸️ *SUB-THRESHOLD ({int(conf_num)}% < 72%)*"
+        # Enforce derived/fallback MCX confidence floor on status badge
+        trade_status_str = f"⏸️ *SUB-THRESHOLD ({int(conf_num)}% < {mcx_floor}%)*"
     elif is_advisory:
         trade_status_str = "🟡 *ADVISORY*"
     elif is_rejected or is_conflict:
@@ -297,7 +299,7 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
         lines.append(f"🧠 *LLM STRUCTURE CHOICE*{m_tag}")
 
         if is_sub_threshold and not is_entered:
-            lines.append(f"Strategy: ⏸️ *NO TRADE* (Confidence {int(conf_num)}% < 72% MCX Floor)")
+            lines.append(f"Strategy: ⏸️ *NO TRADE* (Confidence {int(conf_num)}% < {mcx_floor}% MCX Floor)")
         else:
             conf_str = f" ({int(conf_num)}% conviction)" if conf_num > 0 else ""
             lines.append(f"Strategy: {icon} *{_esc(strat_type)}*{conf_str}")
@@ -418,7 +420,7 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
         else:
             thesis_text += f"\n\n{floor_verdict}"
     elif is_sub_threshold and not is_entered:
-        floor_verdict = f"Verdict: HOLD / NO-TRADE (Confidence {int(conf_num)}% < 72% MCX Floor)"
+        floor_verdict = f"Verdict: HOLD / NO-TRADE (Confidence {int(conf_num)}% < {mcx_floor}% MCX Floor)"
         verdict_pat = r"(?i)verdict:[\s\S]*?(?=(?:\n\n|\n[A-Z][a-z]+:|\Z))"
         if re.search(r"(?i)verdict:", thesis_text):
             thesis_text = re.sub(verdict_pat, floor_verdict, thesis_text)

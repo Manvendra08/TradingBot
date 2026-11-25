@@ -124,7 +124,11 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
     # Expansion/Contraction) are valid — range-bound markets maximize theta
     # decay.  Directional verdicts remain the primary signal for buying premium.
     sym_base = str(ctx.symbol).upper().split()[0]
-    effective_min_conf = MCX_MIN_CONFIDENCE if sym_base in MCX_SYMBOLS else MIN_CONFIDENCE_CORE
+    if sym_base in MCX_SYMBOLS:
+        from src.engine.confidence_threshold import get_effective_mcx_confidence_floor
+        effective_min_conf = get_effective_mcx_confidence_floor(sym_base, default_floor=MCX_MIN_CONFIDENCE)
+    else:
+        effective_min_conf = MIN_CONFIDENCE_CORE
 
     if not is_bullish(verdict) and not is_bearish(verdict):
         if is_neutral(verdict):
@@ -154,7 +158,11 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
         )
 
     sym_base = str(ctx.symbol).upper().split()[0]
-    effective_min_conf = MCX_MIN_CONFIDENCE if sym_base in MCX_SYMBOLS else MIN_CONFIDENCE_CORE
+    if sym_base in MCX_SYMBOLS:
+        from src.engine.confidence_threshold import get_effective_mcx_confidence_floor
+        effective_min_conf = get_effective_mcx_confidence_floor(sym_base, default_floor=MCX_MIN_CONFIDENCE)
+    else:
+        effective_min_conf = MIN_CONFIDENCE_CORE
 
     ctx.direction = "LONG" if is_bullish(verdict) else "SHORT"
 
@@ -528,11 +536,13 @@ def step_regime(ctx: PipelineContext) -> StepResult:
             passed = True
             reason = f"Market regime: {regime} (score={regime_sc}) - Bypassed in research mode"
         else:
-            if is_mcx and regime == REGIME_RANGE and confidence >= MCX_MIN_CONFIDENCE:
+            from src.engine.confidence_threshold import get_effective_mcx_confidence_floor
+            mcx_floor = get_effective_mcx_confidence_floor(sym_base, default_floor=MCX_MIN_CONFIDENCE) if is_mcx else MCX_MIN_CONFIDENCE
+            if is_mcx and regime == REGIME_RANGE and confidence >= mcx_floor:
                 passed = True
                 reason = (
                     f"Market regime: {regime} (score={regime_sc}) - "
-                    f"MCX range accepted at conf={confidence}>=MCX_MIN_CONFIDENCE({MCX_MIN_CONFIDENCE})"
+                    f"MCX range accepted at conf={confidence}>=MCX_MIN_CONFIDENCE({mcx_floor})"
                 )
             else:
                 passed = regime_sc >= MIN_REGIME_SCORE_CORE

@@ -49,7 +49,7 @@ def _worker_loop() -> None:
             ws = websocket.create_connection(
                 _TV_WS_URL,
                 header={"Origin": "https://www.tradingview.com"},
-                timeout=12.0,
+                timeout=30.0,
             )
 
             # 1. Authorize as public user (100% free, no API key required)
@@ -92,11 +92,8 @@ def _worker_loop() -> None:
                     if not chunk:
                         continue
                     if chunk.startswith("~h~"):
-                        # Heartbeat reply
-                        try:
-                            ws.send(chunk)
-                        except Exception:
-                            pass
+                        # Heartbeat reply must preserve TradingView ~m~len~m~ framing
+                        ws.send(f"~m~{len(chunk)}~m~{chunk}")
                         continue
 
                     try:

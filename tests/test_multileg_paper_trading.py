@@ -451,3 +451,146 @@ class TestDualModeDecisionEngineAndConfidenceDecoupling:
             assert res.get("confidence") == 78
 
 
+def _make_ng_ic_verdict():
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        strategy_type="IRON_CONDOR",
+        action="NEUTRAL",
+        legs=[
+            {"strike": 350.0, "option_type": "CE", "side": "SELL", "premium": 10.0, "lots": 1, "delta": 0.22},
+            {"strike": 360.0, "option_type": "CE", "side": "BUY", "premium": 8.0, "lots": 1, "delta": 0.12},
+            {"strike": 325.0, "option_type": "PE", "side": "SELL", "premium": 10.0, "lots": 1, "delta": -0.22},
+            {"strike": 315.0, "option_type": "PE", "side": "BUY", "premium": 8.5, "lots": 1, "delta": -0.10},
+        ],
+        confidence=76,
+        entry_rationale="Iron condor attempt",
+        thesis="Neutral attempt",
+        model_name="test-llm",
+        net_delta=0.0,
+        net_premium=3.5,
+        profit_target_pct=0.5,
+        stop_loss_pct=1.0,
+        time_decay_exit_dte=2,
+        adjustment_plan="",
+    )
+
+
+def _make_ng_ctx(market_regime: str):
+    return {
+        "underlying": 337.0,
+        "atm_strike": 335.0,
+        "expiry": "2026-12-23",
+        "market_regime": market_regime,
+        "option_rows": [
+            {"strike": 350.0, "option_type": "CE", "ltp": 10.0, "oi": 2000, "volume": 200, "bid": 9.9, "ask": 10.1, "delta": 0.22},
+            {"strike": 360.0, "option_type": "CE", "ltp": 8.0, "oi": 1500, "volume": 150, "bid": 7.9, "ask": 8.1, "delta": 0.12},
+            {"strike": 330.0, "option_type": "PE", "ltp": 12.0, "oi": 4000, "volume": 300, "bid": 11.9, "ask": 12.1, "delta": -0.24},
+            {"strike": 325.0, "option_type": "PE", "ltp": 10.0, "oi": 3000, "volume": 200, "bid": 9.9, "ask": 10.1, "delta": -0.20},
+            {"strike": 315.0, "option_type": "PE", "ltp": 4.0, "oi": 2500, "volume": 180, "bid": 3.9, "ask": 4.1, "delta": -0.09},
+        ],
+        "engine_confidence": 55,
+    }
+
+
+def test_ng_fallback_switches_iron_condor_to_bull_put_spread_on_hedge_drag():
+    """In TRENDING_UP, hedge-cost rejection on IRON_CONDOR falls back to BULL_PUT_SPREAD in paper."""
+    from unittest.mock import patch
+    from src.engine.multileg_paper_trading import _attempt_new_entry
+
+    verdict = _make_ng_ic_verdict()
+    ctx = _make_ng_ctx("TRENDING_UP")
+    intel = {"verdict_label": "Low Conviction", "confidence": 55}
+
+    with patch("src.models.schema.get_open_books_for_symbol", return_value=[]), \
+         patch("src.services.typesafe_client.verify_thesis_claims", return_value={"is_contradicted": False}), \
+         patch("src.engine.capital_allocator.calculate_trade_lots", return_value=1), \
+         patch("src.engine.multileg_strategy.score_entry_quality", return_value=(75, ["Fallback"])), \
+         patch("src.engine.multileg_strategy.check_book_conflicts", return_value=(False, "")):
+        res = _attempt_new_entry(
+            "NATURALGAS",
+            ctx,
+            "ng-fb-1",
+            intel,
+            ai_verdict=verdict,
+            ai_mode="advisory",
+            now_iso="2026-11-25T10:00:00+00:00",
+            open_books=[],
+        )
+
+    assert res is not None
+    assert res["action"] == "ADVISORY"
+    assert res["strategy_type"] == "BULL_PUT_SPREAD"
+    assert all(leg["option_type"] == "PE" for leg in res["legs"])
+
+
+def test_ng_fallback_respects_authoritative_bearish_engine_direction():
+    """Even in TRENDING_UP, no BULL_PUT_SPREAD fallback is built if OI engine verdict is bearish."""
+    from unittest.mock import patch
+    from src.engine.multileg_paper_trading import _attempt_new_entry
+
+    verdict = _make_ng_ic_verdict()
+    ctx = _make_ng_ctx("TRENDING_UP")
+    intel = {"verdict_label": "Short Buildup", "confidence": 55}
+
+    with patch("src.models.schema.get_open_books_for_symbol", return_value=[]), \
+         patch("src.services.typesafe_client.verify_thesis_claims", return_value={"is_contradicted": False}), \
+         patch("src.engine.capital_allocator.calculate_trade_lots", return_value=1):
+        res = _attempt_new_entry(
+            "NATURALGAS",
+            ctx,
+            "ng-fb-2",
+            intel,
+            ai_verdict=verdict,
+            ai_mode="advisory",
+            now_iso="2026-11-25T10:00:00+00:00",
+            open_books=[],
+        )
+
+    assert res is not None
+    assert res["action"] == "REJECTED"
+
+
+def test_ng_fallback_switches_on_regime_conflict_even_without_hedge_drag():
+    """In TRENDING_DOWN, IRON_CONDOR passing validate_legs fails regime gate and falls back to BEAR_CALL_SPREAD."""
+    from unittest.mock import patch
+    from src.engine.multileg_paper_trading import _attempt_new_entry
+
+    verdict = _make_ng_ic_verdict()
+    ctx = {
+        "underlying": 337.0,
+        "atm_strike": 335.0,
+        "expiry": "2026-12-23",
+        "market_regime": "TRENDING_DOWN",
+        "option_rows": [
+            {"strike": 345.0, "option_type": "CE", "ltp": 11.0, "oi": 4000, "volume": 300, "bid": 10.9, "ask": 11.1, "delta": 0.24},
+            {"strike": 350.0, "option_type": "CE", "ltp": 10.0, "oi": 3000, "volume": 200, "bid": 9.9, "ask": 10.1, "delta": 0.20},
+            {"strike": 360.0, "option_type": "CE", "ltp": 3.0, "oi": 2500, "volume": 180, "bid": 2.95, "ask": 3.05, "delta": 0.10},
+            {"strike": 325.0, "option_type": "PE", "ltp": 10.0, "oi": 3000, "volume": 200, "bid": 9.9, "ask": 10.1, "delta": -0.20},
+            {"strike": 315.0, "option_type": "PE", "ltp": 3.0, "oi": 2500, "volume": 180, "bid": 2.95, "ask": 3.05, "delta": -0.09},
+        ],
+        "engine_confidence": 55,
+    }
+    intel = {"verdict_label": "Low Conviction", "confidence": 55}
+
+    with patch("src.models.schema.get_open_books_for_symbol", return_value=[]), \
+         patch("src.services.typesafe_client.verify_thesis_claims", return_value={"is_contradicted": False}), \
+         patch("src.engine.capital_allocator.calculate_trade_lots", return_value=1), \
+         patch("src.engine.multileg_strategy.score_entry_quality", return_value=(75, ["Fallback"])), \
+         patch("src.engine.multileg_strategy.check_book_conflicts", return_value=(False, "")):
+        res = _attempt_new_entry(
+            "NATURALGAS",
+            ctx,
+            "ng-fb-3",
+            intel,
+            ai_verdict=verdict,
+            ai_mode="advisory",
+            now_iso="2026-11-25T10:00:00+00:00",
+            open_books=[],
+        )
+
+    assert res is not None
+    assert res["action"] == "ADVISORY"
+    assert res["strategy_type"] == "BEAR_CALL_SPREAD"
+    assert all(leg["option_type"] == "CE" for leg in res["legs"])
+
+

@@ -209,3 +209,82 @@ def test_validate_multileg_mcx_naked_ban():
     res = validate_multileg_trade(proposal, engine_verdict="NEUTRAL", underlying=335.0, symbol="NATURALGAS")
     assert res.is_valid is False
     assert "Naked options structure 'SHORT_STRANGLE' is prohibited on MCX" in res.rejection_reason
+
+
+@pytest.mark.parametrize("strategy,legs", [
+    (
+        "IRON_CONDOR",
+        [
+            {"action": "SELL", "strike": 25500, "option_type": "CE", "entry_premium": 100.0, "ratio": 1},
+            {"action": "BUY", "strike": 25700, "option_type": "CE", "entry_premium": 30.0, "ratio": 1},
+            {"action": "SELL", "strike": 24500, "option_type": "PE", "entry_premium": 100.0, "ratio": 1},
+            {"action": "BUY", "strike": 24300, "option_type": "PE", "entry_premium": 30.0, "ratio": 1},
+        ],
+    ),
+    (
+        "SHORT_STRANGLE",
+        [
+            {"action": "SELL", "strike": 25500, "option_type": "CE", "entry_premium": 100.0, "ratio": 1},
+            {"action": "SELL", "strike": 24500, "option_type": "PE", "entry_premium": 100.0, "ratio": 1},
+        ],
+    ),
+    (
+        "SHORT_STRADDLE",
+        [
+            {"action": "SELL", "strike": 25000, "option_type": "CE", "entry_premium": 200.0, "ratio": 1},
+            {"action": "SELL", "strike": 25000, "option_type": "PE", "entry_premium": 200.0, "ratio": 1},
+        ],
+    ),
+])
+@pytest.mark.parametrize("regime", ["TRENDING_UP", "TRENDING_DOWN"])
+def test_validate_multileg_rejects_neutral_in_trending_regime(strategy, legs, regime):
+    """Neutral structures must be rejected when market_regime is TRENDING_UP or TRENDING_DOWN."""
+    proposal = ParsedExecution(
+        is_valid=True,
+        strategy=strategy,
+        action="NEUTRAL",
+        legs=legs,
+    )
+    res = validate_multileg_trade(
+        proposal,
+        engine_verdict="Low Conviction",
+        underlying=25000.0,
+        symbol="NIFTY",
+        market_regime=regime,
+    )
+    assert res.is_valid is False
+    assert "Regime conflict" in res.rejection_reason
+    assert regime in res.rejection_reason
+
+
+def test_validate_multileg_allows_neutral_in_range_and_spread_in_trend():
+    """Neutral structure is allowed in RANGE, and directional spread is allowed in TRENDING_UP."""
+    ic = ParsedExecution(
+        is_valid=True,
+        strategy="IRON_CONDOR",
+        action="NEUTRAL",
+        legs=[
+            {"action": "SELL", "strike": 25500, "option_type": "CE", "entry_premium": 100.0, "ratio": 1},
+            {"action": "BUY", "strike": 25700, "option_type": "CE", "entry_premium": 30.0, "ratio": 1},
+            {"action": "SELL", "strike": 24500, "option_type": "PE", "entry_premium": 100.0, "ratio": 1},
+            {"action": "BUY", "strike": 24300, "option_type": "PE", "entry_premium": 30.0, "ratio": 1},
+        ],
+    )
+    res_range = validate_multileg_trade(
+        ic, engine_verdict="Sideways", underlying=25000.0, symbol="NIFTY", market_regime="RANGE"
+    )
+    assert res_range.is_valid is True
+
+    bps = ParsedExecution(
+        is_valid=True,
+        strategy="BULL_PUT_SPREAD",
+        action="GO_LONG",
+        legs=[
+            {"action": "SELL", "strike": 24800, "option_type": "PE", "entry_premium": 120.0, "ratio": 1},
+            {"action": "BUY", "strike": 24600, "option_type": "PE", "entry_premium": 45.0, "ratio": 1},
+        ],
+    )
+    res_trend = validate_multileg_trade(
+        bps, engine_verdict="Low Conviction", underlying=25000.0, symbol="NIFTY", market_regime="TRENDING_UP"
+    )
+    assert res_trend.is_valid is True

@@ -1385,7 +1385,11 @@ def _attempt_new_live_entry(
     engine_conf = int((intel or {}).get("confidence") or (scan_context or {}).get("engine_confidence") or 0)
     llm_conf = int(getattr(verdict, "confidence", 0) or 0)
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
-    conf_floor = 72 if is_mcx else 70
+    if is_mcx:
+        from src.engine.confidence_threshold import get_effective_mcx_confidence_floor
+        conf_floor = get_effective_mcx_confidence_floor(symbol)
+    else:
+        conf_floor = 70
 
     # For non-directional strategies (IRON_CONDOR, SHORT_STRANGLE, SHORT_STRADDLE),
     # LLM's assessment of IV, chain quality, and expected move safety is authoritative.
@@ -1602,7 +1606,18 @@ def _attempt_new_live_entry(
             "legs": legs,
         }
         proposal = parse_llm_execution(raw_proposal, underlying=underlying)
-        engine_verdict_str = str((intel or {}).get("verdict") or (scan_context or {}).get("verdict") or "")
+        engine_verdict_str = str(
+            (intel or {}).get("verdict_label")
+            or (intel or {}).get("verdict")
+            or (scan_context or {}).get("verdict_label")
+            or (scan_context or {}).get("verdict")
+            or ""
+        )
+        market_regime_str = str(
+            (scan_context or {}).get("market_regime")
+            or (scan_context or {}).get("regime")
+            or ""
+        )
         val_res = validate_multileg_trade(
             proposal=proposal,
             engine_verdict=engine_verdict_str,
@@ -1610,6 +1625,7 @@ def _attempt_new_live_entry(
             max_margin_inr=MAX_BOOK_MARGIN,
             max_net_delta=MAX_NET_DELTA,
             symbol=symbol,
+            market_regime=market_regime_str,
         )
         if not val_res.is_valid:
             log.info("[multileg-live] %s: validate_multileg_trade rejected entry: %s", symbol, val_res.rejection_reason)

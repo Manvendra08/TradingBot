@@ -74,6 +74,7 @@ def validate_multileg_trade(
     max_margin_inr: float = 500000.0,
     max_net_delta: float = 0.60,
     symbol: str = "NIFTY",
+    market_regime: str = "",
 ) -> ValidationResult:
     """Validate multileg proposal against engine verdict and risk limits."""
     if not proposal.is_valid:
@@ -141,6 +142,15 @@ def validate_multileg_trade(
                     is_valid=False,
                     rejection_reason=f"Direction conflict: Neutral structure '{strategy_type}' cannot be entered against trending engine verdict '{engine_verdict}'."
                 )
+        regime_upper = str(market_regime or "").upper().strip()
+        if regime_upper in ("TRENDING_UP", "TRENDING_DOWN"):
+            return ValidationResult(
+                is_valid=False,
+                rejection_reason=(
+                    f"Regime conflict: Neutral structure '{strategy_type}' cannot be entered "
+                    f"in trending market regime '{regime_upper}'."
+                ),
+            )
 
     # Approximate margin check
     estimated_margin = _estimate_margin(proposal.legs, underlying, symbol=symbol)

@@ -926,6 +926,179 @@ def _monitor_open_books(
     }
 
 
+_NEUTRAL_STRUCTURES = ("IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE")
+
+
+def _try_directional_spread_fallback(
+    symbol: str,
+    scan_context: dict,
+    engine_verdict_str: str,
+    market_regime_str: str,
+    dashboard_lots: int,
+    max_book_margin: float,
+    max_net_delta: float,
+    validate_legs_fn=None,
+) -> tuple[str, str, list[dict]] | None:
+    """Build a Bull Put Spread (TRENDING_UP) or Bear Call Spread (TRENDING_DOWN)
+    when a neutral structure is blocked on hedge cost or the regime gate.
+
+    Authoritative OI engine direction is preserved: no fallback is built if
+    the engine verdict opposes the regime direction.
+    """
+    regime_upper = str(market_regime_str or "").upper().strip()
+    if regime_upper == "TRENDING_UP":
+        target_strategy, opt_type, cand_dir, action = "BULL_PUT_SPREAD", "PE", "BULLISH", "GO_LONG"
+    elif regime_upper == "TRENDING_DOWN":
+        target_strategy, opt_type, cand_dir, action = "BEAR_CALL_SPREAD", "CE", "BEARISH", "GO_SHORT"
+    else:
+        return None
+
+    from src.engine.multileg_validator import _check_engine_direction, validate_multileg_trade
+    from src.engine.multileg_strategy import get_candidate_strikes
+    from src.engine.execution_parser import parse_llm_execution
+    from src.engine.trade_plan import get_option_premium
+    from config.multileg_strategies import MIN_WING_WIDTH_PCT, MIN_WING_WIDTH_POINTS
+
+    is_bullish_eng, is_bearish_eng = _check_engine_direction(engine_verdict_str)
+    if target_strategy == "BULL_PUT_SPREAD" and is_bearish_eng:
+        log.info(
+            "[multileg-paper] %s: fallback BULL_PUT_SPREAD skipped — engine verdict '%s' is bearish",
+            symbol, engine_verdict_str,
+        )
+        return None
+    if target_strategy == "BEAR_CALL_SPREAD" and is_bullish_eng:
+        log.info(
+            "[multileg-paper] %s: fallback BEAR_CALL_SPREAD skipped — engine verdict '%s' is bullish",
+            symbol, engine_verdict_str,
+        )
+        return None
+
+    underlying = float((scan_context or {}).get("underlying") or 0.0)
+    option_rows = list((scan_context or {}).get("option_rows") or [])
+    expiry = (scan_context or {}).get("expiry", "")
+    atm_strike = float((scan_context or {}).get("atm_strike") or round(underlying))
+    if underlying <= 0 or not option_rows:
+        return None
+
+    sym_key = symbol.upper().split()[0] if symbol else "DEFAULT"
+    min_width_pts = MIN_WING_WIDTH_POINTS.get(sym_key, MIN_WING_WIDTH_POINTS.get("DEFAULT", 50.0))
+    min_width_pct = MIN_WING_WIDTH_PCT.get(sym_key, MIN_WING_WIDTH_PCT.get("DEFAULT", 0.005))
+    eff_min_width = max(min_width_pts, underlying * min_width_pct)
+
+    cands = get_candidate_strikes(
+        option_rows=option_rows,
+        symbol=symbol,
+        underlying=underlying,
+        atm_strike=atm_strike,
+        direction=cand_dir,
+        top_k=max(24, len(option_rows)),
+    )
+    pool = [c for c in (cands.get(opt_type) or []) if c.get("is_otm")]
+    if not pool:
+        return None
+
+    lots = max(1, int(dashboard_lots or 1))
+    for short_c in pool[:6]:
+        short_strike = float(short_c["strike"])
+        if opt_type == "PE" and short_strike >= underlying:
+            continue
+        if opt_type == "CE" and short_strike <= underlying:
+            continue
+
+        short_prem = get_option_premium(
+            symbol=symbol,
+            expiry=expiry,
+            strike=short_strike,
+            option_type=opt_type,
+            option_rows=option_rows,
+            underlying_price=underlying,
+        )
+        if short_prem is None or short_prem <= 0:
+            continue
+
+        if opt_type == "PE":
+            wing_cands = [w for w in pool if float(w["strike"]) <= short_strike - eff_min_width]
+        else:
+            wing_cands = [w for w in pool if float(w["strike"]) >= short_strike + eff_min_width]
+        wing_cands.sort(key=lambda w: abs(float(w["strike"]) - short_strike))
+
+        for wing_c in wing_cands[:6]:
+            wing_strike = float(wing_c["strike"])
+            buy_prem = get_option_premium(
+                symbol=symbol,
+                expiry=expiry,
+                strike=wing_strike,
+                option_type=opt_type,
+                option_rows=option_rows,
+                underlying_price=underlying,
+            )
+            if buy_prem is None or buy_prem <= 0 or buy_prem >= short_prem:
+                continue
+
+            cand_legs = [
+                {
+                    "strike": short_strike,
+                    "option_type": opt_type,
+                    "side": "SELL",
+                    "action": "SELL",
+                    "premium": float(short_prem),
+                    "entry_premium": float(short_prem),
+                    "delta": float(short_c.get("delta") or 0.0),
+                    "expiry": expiry,
+                    "ratio": 1,
+                    "lots": lots,
+                },
+                {
+                    "strike": wing_strike,
+                    "option_type": opt_type,
+                    "side": "BUY",
+                    "action": "BUY",
+                    "premium": float(buy_prem),
+                    "entry_premium": float(buy_prem),
+                    "delta": float(wing_c.get("delta") or 0.0),
+                    "expiry": expiry,
+                    "ratio": 1,
+                    "lots": lots,
+                },
+            ]
+
+            if validate_legs_fn is not None:
+                legs_ok, _ = validate_legs_fn(target_strategy, cand_legs, option_rows, underlying, symbol)
+                if not legs_ok:
+                    continue
+
+            net_credit = round(float(short_prem) - float(buy_prem), 2)
+            width = abs(short_strike - wing_strike)
+            proposal = parse_llm_execution(
+                {
+                    "strategy": target_strategy,
+                    "action": action,
+                    "legs": cand_legs,
+                    "net_credit": net_credit,
+                    "max_risk": round(max(0.0, width - net_credit), 2),
+                },
+                underlying=underlying,
+            )
+            val_res = validate_multileg_trade(
+                proposal=proposal,
+                engine_verdict=engine_verdict_str,
+                underlying=underlying,
+                max_margin_inr=max_book_margin,
+                max_net_delta=max_net_delta,
+                symbol=symbol,
+                market_regime=regime_upper,
+            )
+            if val_res.is_valid:
+                log.info(
+                    "[multileg-paper] %s: regime fallback switched neutral proposal to %s "
+                    "(SELL %.1f / BUY %.1f %s, net_credit=%.2f, regime=%s)",
+                    symbol, target_strategy, short_strike, wing_strike, opt_type, net_credit, regime_upper,
+                )
+                return target_strategy, action, cand_legs
+
+    return None
+
+
 def _attempt_new_entry(
     symbol: str,
     scan_context: dict,
@@ -1024,7 +1197,11 @@ def _attempt_new_entry(
     engine_conf = int((intel or {}).get("confidence") or (scan_context or {}).get("engine_confidence") or 0)
     llm_conf = int(getattr(verdict, "confidence", 0) or 0)
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
-    conf_floor = 72 if is_mcx else 70
+    if is_mcx:
+        from src.engine.confidence_threshold import get_effective_mcx_confidence_floor
+        conf_floor = get_effective_mcx_confidence_floor(symbol)
+    else:
+        conf_floor = 70
 
     # For non-directional strategies (IRON_CONDOR, SHORT_STRANGLE, SHORT_STRADDLE),
     # LLM's assessment of IV, chain quality, and expected move safety is authoritative.
@@ -1177,6 +1354,7 @@ def _attempt_new_entry(
                 "thesis": getattr(verdict, "thesis", ""),
             }
 
+    dashboard_lots = 1
     try:
         from src.engine.capital_allocator import calculate_trade_lots
         sizing_premium = max((float(l.get("premium") or 0) for l in legs), default=0.0)
@@ -1200,6 +1378,23 @@ def _attempt_new_entry(
             leg.setdefault("ratio", 1)
             leg.setdefault("lots", 1)
 
+    market_regime_str = str(
+        (scan_context or {}).get("market_regime")
+        or (scan_context or {}).get("regime")
+        or ""
+    ).upper().strip()
+    engine_verdict_str = str(
+        (intel or {}).get("verdict_label")
+        or (intel or {}).get("verdict")
+        or (scan_context or {}).get("verdict_label")
+        or (scan_context or {}).get("verdict")
+        or ""
+    )
+    proposal_action = getattr(verdict, "action", "") or (
+        "GO_LONG" if "BULL" in strategy_type else "GO_SHORT" if "BEAR" in strategy_type else "NEUTRAL"
+    )
+    fallback_used = False
+
     if validate_legs is not None:
         underlying = float((scan_context or {}).get("underlying") or 0.0)
         option_rows = list((scan_context or {}).get("option_rows") or [])
@@ -1208,20 +1403,39 @@ def _attempt_new_entry(
             strategy_type, legs, option_rows, underlying, symbol
         )
         if not is_valid:
-            log.info(
-                "[multileg-paper] %s: legs validation failed — %s",
-                symbol,
-                validation_msg,
-            )
-            return {
-                "action": "REJECTED",
-                "decision_stage": "LEG_VALIDATION",
-                "strategy_type": strategy_type,
-                "confidence": getattr(verdict, "confidence", 0),
-                "thesis": getattr(verdict, "thesis", ""),
-                "ai_model_name": getattr(verdict, "model_name", None),
-                "reason": f"Legs validation: {validation_msg}",
-            }
+            if (
+                str(strategy_type).upper() in _NEUTRAL_STRUCTURES
+                and market_regime_str in ("TRENDING_UP", "TRENDING_DOWN")
+                and "insurance drag" in str(validation_msg).lower()
+            ):
+                fb = _try_directional_spread_fallback(
+                    symbol=symbol,
+                    scan_context=scan_context,
+                    engine_verdict_str=engine_verdict_str,
+                    market_regime_str=market_regime_str,
+                    dashboard_lots=dashboard_lots,
+                    max_book_margin=MAX_BOOK_MARGIN,
+                    max_net_delta=MAX_NET_DELTA,
+                    validate_legs_fn=validate_legs,
+                )
+                if fb is not None:
+                    strategy_type, proposal_action, legs = fb
+                    fallback_used = True
+            if not fallback_used:
+                log.info(
+                    "[multileg-paper] %s: legs validation failed — %s",
+                    symbol,
+                    validation_msg,
+                )
+                return {
+                    "action": "REJECTED",
+                    "decision_stage": "LEG_VALIDATION",
+                    "strategy_type": strategy_type,
+                    "confidence": getattr(verdict, "confidence", 0),
+                    "thesis": getattr(verdict, "thesis", ""),
+                    "ai_model_name": getattr(verdict, "model_name", None),
+                    "reason": f"Legs validation: {validation_msg}",
+                }
 
     # ── Strict Multi-Leg Proposal Validation (validate_multileg_trade) ─
     try:
@@ -1229,13 +1443,10 @@ def _attempt_new_entry(
         from src.engine.multileg_validator import validate_multileg_trade
         raw_proposal = {
             "strategy": strategy_type,
-            "action": getattr(verdict, "action", "") or (
-                "GO_LONG" if "BULL" in strategy_type else "GO_SHORT" if "BEAR" in strategy_type else "NEUTRAL"
-            ),
+            "action": proposal_action,
             "legs": legs,
         }
         proposal = parse_llm_execution(raw_proposal, underlying=underlying)
-        engine_verdict_str = str((intel or {}).get("verdict") or (scan_context or {}).get("verdict") or "")
         val_res = validate_multileg_trade(
             proposal=proposal,
             engine_verdict=engine_verdict_str,
@@ -1243,7 +1454,28 @@ def _attempt_new_entry(
             max_margin_inr=MAX_BOOK_MARGIN,
             max_net_delta=MAX_NET_DELTA,
             symbol=symbol,
+            market_regime=market_regime_str,
         )
+        if not val_res.is_valid and not fallback_used:
+            if (
+                str(strategy_type).upper() in _NEUTRAL_STRUCTURES
+                and market_regime_str in ("TRENDING_UP", "TRENDING_DOWN")
+                and "regime conflict" in str(val_res.rejection_reason).lower()
+            ):
+                fb = _try_directional_spread_fallback(
+                    symbol=symbol,
+                    scan_context=scan_context,
+                    engine_verdict_str=engine_verdict_str,
+                    market_regime_str=market_regime_str,
+                    dashboard_lots=dashboard_lots,
+                    max_book_margin=MAX_BOOK_MARGIN,
+                    max_net_delta=MAX_NET_DELTA,
+                    validate_legs_fn=validate_legs,
+                )
+                if fb is not None:
+                    strategy_type, proposal_action, legs = fb
+                    fallback_used = True
+                    val_res.is_valid = True
         if not val_res.is_valid:
             log.info("[multileg-paper] %s: validate_multileg_trade rejected entry: %s", symbol, val_res.rejection_reason)
             return {
