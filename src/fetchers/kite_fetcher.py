@@ -43,16 +43,19 @@ class KiteDataClient:
     }
 
     def __init__(self, kite_client: Any = None):
+        self._explicit_kite = kite_client
         self._kite = kite_client
         self._instruments_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._greeks_calc = GreeksCalculator()
 
     @property
     def kite(self) -> Any:
-        if self._kite is None:
-            from src.engine.live_trading import get_kite_client
-            self._kite = get_kite_client()
-        return self._kite
+        if self._explicit_kite is not None:
+            return self._explicit_kite
+        if getattr(self, "_kite_client", None) is not None:
+            return self._kite_client
+        from src.engine.live_trading import get_kite_client
+        return get_kite_client()
 
     def is_authenticated(self) -> bool:
         """Check if Kite client is active with a valid session."""

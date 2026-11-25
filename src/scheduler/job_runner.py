@@ -2171,36 +2171,84 @@ def start_scheduler(immediate: bool = False):
                         log.error("[scheduler] Index weights refresh trigger exception: %s", exc)
 
             # ── Pre-market: headless Kite auto-login at ~08:45 IST Mon-Fri ──
-            # Runs once per day for NSE indices (NSE opens at 09:15).
-            # Skips weekends and market holidays automatically.
+            # Runs once per day for NSE indices (NSE opens at 09:15) and MCX (09:00).
+            # Pre-warms Kite instrument catalogs and dispatches pre-market Telegram status.
             if now_ist.weekday() < 5:  # Monday=0 … Friday=4
                 now_time_str = now_ist.strftime("%H:%M")
                 if "08:45" <= now_time_str <= "09:05" and _last_auto_login_date != current_date:
                     _last_auto_login_date = current_date
-                    from src.models.schema import get_broker_config
-                    broker_cfg = get_broker_config()
-                    if broker_cfg and broker_cfg.get("api_key") and broker_cfg.get("user_id"):
-                        log.info(
-                            "[scheduler] Pre-market: triggering headless Kite auto-login (08:45 IST)"
-                        )
-                        try:
-                            from src.services.zerodha_auto_login import auto_login_kite
 
-                            result = auto_login_kite(force=True)
-                            if result.get("success"):
-                                log.info(
-                                    "[scheduler] Kite auto-login: %s",
-                                    result.get("message", "OK"),
-                                )
-                            else:
-                                log.warning(
-                                    "[scheduler] Kite auto-login failed: %s",
-                                    result.get("message", "unknown error"),
-                                )
-                        except Exception as exc:
-                            log.error("[scheduler] Kite auto-login exception: %s", exc)
-                    else:
-                        log.debug("[scheduler] Kite credentials not configured — skipping pre-market auto-login.")
+                    def _run_premarket_tasks(run_date: str, ts_hm: str) -> None:
+                        from src.models.schema import get_broker_config
+                        broker_cfg = get_broker_config()
+                        kite_status_line = "⏭️ Skipped (credentials not configured)"
+                        catalog_status_line = "⏭️ Skipped"
+                        if broker_cfg and broker_cfg.get("api_key") and broker_cfg.get("user_id"):
+                            log.info(
+                                "[scheduler] Pre-market: triggering headless Kite auto-login (08:45 IST)"
+                            )
+                            try:
+                                from src.services.zerodha_auto_login import auto_login_kite
+
+                                result = auto_login_kite(force=True)
+                                if result.get("success"):
+                                    log.info(
+                                        "[scheduler] Kite auto-login: %s",
+                                        result.get("message", "OK"),
+                                    )
+                                    kite_status_line = f"✅ OK ({result.get('message', 'OK')})"
+                                    # Pre-warm Kite segment catalogs before 09:00 MCX / 09:15 NSE opens
+                                    try:
+                                        from src.fetchers.kite_fetcher import get_kite_data_client
+                                        k_data = get_kite_data_client()
+                                        seg_counts = []
+                                        for seg in ("MCX", "NFO", "BFO"):
+                                            insts = k_data.get_instruments(seg, force_refresh=True)
+                                            seg_counts.append(f"{seg}:{len(insts)}")
+                                        catalog_status_line = f"✅ Pre-warmed ({', '.join(seg_counts)})"
+                                    except Exception as cat_exc:
+                                        log.warning("[scheduler] Pre-market catalog warm-up failed: %s", cat_exc)
+                                        catalog_status_line = f"⚠️ Partial ({cat_exc})"
+                                else:
+                                    err_msg = result.get("message", "unknown error")
+                                    log.warning("[scheduler] Kite auto-login failed: %s", err_msg)
+                                    kite_status_line = f"❌ FAILED ({err_msg})"
+                            except Exception as exc:
+                                log.error("[scheduler] Kite auto-login exception: %s", exc)
+                                kite_status_line = f"❌ EXCEPTION ({exc})"
+                        else:
+                            log.debug("[scheduler] Kite credentials not configured — skipping pre-market auto-login.")
+
+                        # Gather 08:45 StockFut morning refresh telemetry if run today
+                        sf_line = "⏳ Pending / Not configured"
+                        try:
+                            from src.stockfut.jobs import get_last_morning_refresh_status
+                            sf_stat = get_last_morning_refresh_status()
+                            if sf_stat.get("date") == run_date:
+                                if sf_stat.get("ok"):
+                                    sf_line = f"✅ {sf_stat.get('banned', 0)} banned, {sf_stat.get('mwpl', 0)} MWPL, {sf_stat.get('events', 0)} events"
+                                else:
+                                    sf_line = f"❌ FAILED ({sf_stat.get('error', 'unknown')})"
+                        except Exception:
+                            pass
+
+                        try:
+                            from src.alerts.telegram_dispatcher import send_text
+                            send_text(
+                                f"🌅 **Pre-Market Status** | {run_date} {ts_hm} IST\n\n"
+                                f"• **Zerodha Kite Login:** {kite_status_line}\n"
+                                f"• **Kite Instrument Catalogs:** {catalog_status_line}\n"
+                                f"• **StockFut Refresh (08:45):** {sf_line}"
+                            )
+                        except Exception as tg_exc:
+                            log.warning("[scheduler] Failed to send pre-market Telegram status: %s", tg_exc)
+
+                    threading.Thread(
+                        target=_run_premarket_tasks,
+                        args=(current_date, now_time_str),
+                        daemon=True,
+                        name="premarket-autologin",
+                    ).start()
 
             # ── Post-market: FII/DII Data Fetch at 19:15 IST (Mon-Fri) ──
             if now_ist.weekday() < 5:

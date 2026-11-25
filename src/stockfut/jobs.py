@@ -57,6 +57,14 @@ def is_weekday(dt: Optional[datetime] = None) -> bool:
     return now_dt.weekday() < 5
 
 
+_LAST_MORNING_REFRESH_STATUS: Dict[str, Any] = {}
+
+
+def get_last_morning_refresh_status() -> Dict[str, Any]:
+    """Return the latest 08:45 IST StockFut morning refresh telemetry."""
+    return dict(_LAST_MORNING_REFRESH_STATUS)
+
+
 def job_stockfut_morning_refresh() -> None:
     """08:45 IST: Refresh ban list, MWPL, and corporate events."""
     if not is_weekday():
@@ -66,8 +74,26 @@ def job_stockfut_morning_refresh() -> None:
         ban = fetch_ban_list()
         mwpl = fetch_mwpl()
         events = fetch_events(days=7)
+        _LAST_MORNING_REFRESH_STATUS.clear()
+        _LAST_MORNING_REFRESH_STATUS.update(
+            {
+                "date": datetime.now(IST).strftime("%Y-%m-%d"),
+                "ok": True,
+                "banned": len(ban),
+                "mwpl": len(mwpl),
+                "events": len(events),
+            }
+        )
         log.info("[STOCKFUT 08:45] Refreshed: %d banned, %d MWPL entries, %d events", len(ban), len(mwpl), len(events))
     except Exception as e:
+        _LAST_MORNING_REFRESH_STATUS.clear()
+        _LAST_MORNING_REFRESH_STATUS.update(
+            {
+                "date": datetime.now(IST).strftime("%Y-%m-%d"),
+                "ok": False,
+                "error": str(e),
+            }
+        )
         log.error("[STOCKFUT 08:45] Morning refresh failed: %s", e)
 
 

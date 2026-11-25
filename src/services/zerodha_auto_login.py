@@ -185,6 +185,13 @@ def auto_login_kite(force: bool = False) -> dict:
             from src.services.zerodha_auth import is_token_valid
 
             if is_token_valid():
+                # Ensure this process drops any stale in-memory KiteConnect instance from prior day
+                try:
+                    from src.engine.live_trading import clear_kite_client_cache
+
+                    clear_kite_client_cache()
+                except Exception:
+                    pass
                 log.info(
                     "[auto_login] Access token already valid — dashboard callback handled exchange"
                 )
