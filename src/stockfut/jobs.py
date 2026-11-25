@@ -20,6 +20,12 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from config.holidays import get_nse_holidays
+from config.runtime_config import (
+    is_stockfut_live_enabled,
+    is_stockfut_paper_enabled,
+    load_runtime_config,
+)
 from config.stockfut_loader import load_stockfut_config
 from src.fetchers.kite_fetcher import get_kite_data_client
 from src.fetchers.nse_eod_fetcher import fetch_ban_list, fetch_events, fetch_mwpl
@@ -57,6 +63,24 @@ def is_weekday(dt: Optional[datetime] = None) -> bool:
     return now_dt.weekday() < 5
 
 
+def is_trading_day(d: Optional[date] = None) -> bool:
+    """Return True if date is a weekday and not an NSE trading holiday."""
+    target = d or datetime.now(IST).date()
+    if target.weekday() >= 5:
+        return False
+    return target not in get_nse_holidays(target.year)
+
+
+def prev_trading_date(ref_date: date) -> date:
+    """Return the most recent NSE trading session date strictly before ref_date."""
+    cur = ref_date - timedelta(days=1)
+    for _ in range(15):
+        if is_trading_day(cur):
+            return cur
+        cur -= timedelta(days=1)
+    return ref_date - timedelta(days=1)
+
+
 _LAST_MORNING_REFRESH_STATUS: Dict[str, Any] = {}
 
 
@@ -67,7 +91,7 @@ def get_last_morning_refresh_status() -> Dict[str, Any]:
 
 def job_stockfut_morning_refresh() -> None:
     """08:45 IST: Refresh ban list, MWPL, and corporate events."""
-    if not is_weekday():
+    if not is_trading_day():
         return
     log.info("[STOCKFUT 08:45] Refreshing NSE ban list, MWPL, and event calendar...")
     try:
@@ -105,7 +129,7 @@ def job_stockfut_morning_execution() -> None:
     3. refresh positions and margin
     4. execute_armed_entries()
     """
-    if not is_weekday():
+    if not is_trading_day():
         return
     log.info("[STOCKFUT 09:30] Starting morning execution routine...")
 
@@ -135,16 +159,40 @@ def job_stockfut_morning_execution() -> None:
     time.sleep(2)
 
     # Step 3: Refresh open positions and execute ARMED entries
+    rt_cfg = load_runtime_config()
+    if rt_cfg.get("trading_paused", False):
+        log.info("[STOCKFUT 09:30] Trading paused in runtime_config; skipping new entries")
+        return
+
+    paper_on = is_stockfut_paper_enabled()
+    live_on = is_stockfut_live_enabled()
+    if not paper_on and not live_on:
+        log.info("[STOCKFUT 09:30] Stock Futures paper and live execution disabled; skipping entries")
+        return
+
     refreshed_open = get_open_stockfut_trades()
     equity = float(cfg.get("capital_reference", 10000000.0))
 
-    # Fetch today's ARMED watchlist rows
-    today_str = datetime.now(IST).strftime("%Y-%m-%d")
-    watchlist = get_latest_stockfut_watchlist(scan_date=today_str)
-    armed_rows = [r for r in watchlist if r.get("status") == "ARMED"]
+    # EOD scans run on Day T (or last trading session); morning execution runs at Day T+1 09:30 IST.
+    today_date = datetime.now(IST).date()
+    today_str = today_date.strftime("%Y-%m-%d")
+    prev_session_str = prev_trading_date(today_date).strftime("%Y-%m-%d")
+
+    watchlist = get_latest_stockfut_watchlist(scan_date=None)
+    eligible_armed: List[Dict[str, Any]] = []
+    for r in watchlist:
+        if r.get("status") != "ARMED":
+            continue
+        r_scan_date = str(r.get("scan_date") or "")
+        if r_scan_date >= prev_session_str:
+            eligible_armed.append(r)
+        else:
+            update_stockfut_watchlist_status(r["id"], status="EXPIRED", skip_reason=f"STALE_SCAN_{r_scan_date}")
+
+    armed_rows = eligible_armed
 
     if not armed_rows:
-        log.info("[STOCKFUT 09:30] No ARMED setups to execute for today (%s)", today_str)
+        log.info("[STOCKFUT 09:30] No ARMED setups to execute for today (%s, min scan_date=%s)", today_str, prev_session_str)
         return
 
     log.info("[STOCKFUT 09:30] Evaluating %d ARMED setups...", len(armed_rows))
@@ -225,7 +273,7 @@ def job_stockfut_morning_execution() -> None:
 
 def job_stockfut_eod_scan() -> None:
     """19:30 IST: Run EOD scan across universe, generate ARMED watchlist."""
-    if not is_weekday():
+    if not is_trading_day():
         return
     log.info("[STOCKFUT 19:30] Running EOD Stock Futures Scan...")
     try:
@@ -353,7 +401,7 @@ def job_stockfut_eod_scan() -> None:
 
 def job_stockfut_reconcile() -> None:
     """15-minute periodic reconciliation."""
-    if not is_weekday():
+    if not is_trading_day():
         return
     reconcile_periodic()
 
