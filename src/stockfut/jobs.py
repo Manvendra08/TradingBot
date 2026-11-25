@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from config.holidays import get_nse_holidays
@@ -29,10 +29,15 @@ from config.runtime_config import (
 from config.stockfut_loader import load_stockfut_config
 from src.fetchers.kite_fetcher import get_kite_data_client
 from src.fetchers.nse_eod_fetcher import fetch_ban_list, fetch_events, fetch_mwpl
-from src.alerts.futures_digest import send_eod_watchlist_alert, send_morning_execution_alert
+from src.alerts.futures_digest import (
+    send_eod_watchlist_alert,
+    send_morning_execution_alert,
+    send_trade_event_alert,
+)
 from src.models.schema import (
     get_latest_stockfut_watchlist,
     get_open_stockfut_trades,
+    get_stockfut_trade_by_id,
     log_stockfut_decision,
     update_stockfut_watchlist_status,
 )
@@ -399,10 +404,80 @@ def job_stockfut_eod_scan() -> None:
         log.error("[STOCKFUT 19:30] EOD scan failed: %s", e)
 
 
+def _evaluate_intraday_paper_exits(now_dt: Optional[datetime] = None) -> None:
+    """
+    Evaluate quote-only intraday exits (HARD_STOP, T1_HIT, T2_HIT, EXPIRY)
+    for open PAPER positions during NSE market hours (09:15-15:30 IST).
+    Daily-bar exits (THESIS_BREAK, TRAIL, REGIME_TURN, TIME_STOP) stay at 09:30 IST.
+    """
+    now_ist = now_dt or datetime.now(IST)
+    t_now = now_ist.time()
+    if t_now < dt_time(9, 15) or t_now > dt_time(15, 30):
+        return
+
+    open_paper = get_open_stockfut_trades(mode="PAPER")
+    if not open_paper:
+        return
+
+    symbols = sorted({str(t["tradingsymbol"]) for t in open_paper if t.get("tradingsymbol")})
+    if not symbols:
+        return
+
+    try:
+        quotes = get_kite_data_client().get_futures_quotes(symbols)
+    except Exception as e:
+        log.warning("[STOCKFUT INTRADAY] Quote fetch failed: %s", e)
+        return
+
+    if not quotes:
+        return
+
+    cfg = load_stockfut_config()
+    executor = PaperExecutor(cfg=cfg)
+    allowed_rules = {"HARD_STOP", "T1_HIT", "T2_HIT", "EXPIRY"}
+
+    for trade in open_paper:
+        tsym = str(trade.get("tradingsymbol", ""))
+        q = quotes.get(tsym)
+        if not q or float(q.get("price") or 0.0) <= 0.0:
+            continue
+
+        ltp = float(q["price"])
+        est_atr = abs(float(trade["entry_price"]) - float(trade.get("initial_sl", trade["sl"]))) or 10.0
+        intraday_market = {
+            "price": ltp,
+            "bid": float(q.get("bid") or ltp),
+            "ask": float(q.get("ask") or ltp),
+            "atr": est_atr,
+        }
+        dec = evaluate_future_exit(trade=trade, market=intraday_market, now=now_ist, cfg=cfg)
+        if not dec or dec.rule not in allowed_rules:
+            continue
+
+        log.info(
+            "[STOCKFUT INTRADAY] Trade #%d (%s) triggered %s (%s) @ ₹%.2f",
+            trade["id"], tsym, dec.rule, dec.action, ltp,
+        )
+        executor.apply_exit(trade["id"], decision=dec, quote=q, asof=now_ist)
+
+        try:
+            updated = get_stockfut_trade_by_id(trade["id"]) or trade
+            ev_type = "SL_HIT" if dec.rule == "HARD_STOP" else dec.rule
+            payload = {
+                **updated,
+                "realized_pnl": float(updated.get("pnl", 0.0) or 0.0),
+                "exit_price": float(updated.get("exit_price") or ltp),
+            }
+            send_trade_event_alert(ev_type, payload, detail=dec.reason)
+        except Exception as e:
+            log.warning("[STOCKFUT INTRADAY] Exit alert failed for #%d: %s", trade["id"], e)
+
+
 def job_stockfut_reconcile() -> None:
-    """15-minute periodic reconciliation."""
+    """15-minute periodic intraday exit monitor + broker reconciliation."""
     if not is_trading_day():
         return
+    _evaluate_intraday_paper_exits()
     reconcile_periodic()
 
 
