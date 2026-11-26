@@ -577,6 +577,7 @@ CREATE TABLE IF NOT EXISTS stockfut_watchlist (
     skip_reason         TEXT,
     snapshot_id         TEXT,
     atr                 REAL,
+    regime              TEXT DEFAULT 'NEUTRAL',
     created_at          TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -865,6 +866,7 @@ _MIGRATIONS = [
     ("M160_dedup_stockfut_watchlist", "DELETE FROM stockfut_watchlist WHERE id NOT IN (SELECT MAX(id) FROM stockfut_watchlist GROUP BY scan_date, symbol)"),
     ("M161_idx_stockfut_watchlist_unique", "CREATE UNIQUE INDEX IF NOT EXISTS uq_stockfut_watchlist_date_symbol ON stockfut_watchlist (scan_date, symbol)"),
     ("M162_add_atr_to_stockfut_watchlist", "ALTER TABLE stockfut_watchlist ADD COLUMN atr REAL"),
+    ("M163_add_regime_to_stockfut_watchlist", "ALTER TABLE stockfut_watchlist ADD COLUMN regime TEXT DEFAULT 'NEUTRAL'"),
 ]
 
 
@@ -3947,7 +3949,8 @@ def insert_stockfut_watchlist(row: dict) -> int:
                         r_multiple = ?,
                         snapshot_id = ?,
                         status = ?,
-                        atr = ?
+                        atr = ?,
+                        regime = ?
                     WHERE id = ?
                     """,
                     (
@@ -3967,6 +3970,7 @@ def insert_stockfut_watchlist(row: dict) -> int:
                         row.get("snapshot_id"),
                         row.get("status", "ARMED"),
                         float(row["atr"]) if row.get("atr") else None,
+                        row.get("regime", "NEUTRAL"),
                         row_id,
                     ),
                 )
@@ -3977,8 +3981,8 @@ def insert_stockfut_watchlist(row: dict) -> int:
                 INSERT INTO stockfut_watchlist (
                     scan_date, scan_time, symbol, tradingsymbol, expiry,
                     side, bias, score, planned_entry, sl, t1, t2, lots,
-                    lot_size, r_multiple, status, skip_reason, snapshot_id, atr
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    lot_size, r_multiple, status, skip_reason, snapshot_id, atr, regime
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["scan_date"],
@@ -4000,6 +4004,7 @@ def insert_stockfut_watchlist(row: dict) -> int:
                     row.get("skip_reason"),
                     row.get("snapshot_id"),
                     float(row["atr"]) if row.get("atr") else None,
+                    row.get("regime", "NEUTRAL"),
                 ),
             )
             return int(cursor.lastrowid)
@@ -4059,6 +4064,29 @@ def log_stockfut_decision(kind: str, symbol: str, payload: dict, snapshot_id: st
             """,
             (now_iso, kind, symbol, payload_str, snapshot_id),
         )
+
+
+def get_latest_stockfut_decision(kind: str, symbol: str | None = None) -> dict | None:
+    """Retrieve the most recent decision record of a given kind."""
+    with get_read_conn() as conn:
+        if symbol:
+            row = conn.execute(
+                "SELECT * FROM stockfut_decisions WHERE kind = ? AND symbol = ? ORDER BY id DESC LIMIT 1",
+                (kind, symbol),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM stockfut_decisions WHERE kind = ? ORDER BY id DESC LIMIT 1",
+                (kind,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["payload"] = json.loads(d.get("payload_json") or "{}")
+        except Exception:
+            d["payload"] = {}
+        return d
 
 
 def insert_stockfut_order_intent(intent: dict) -> int:

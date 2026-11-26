@@ -5476,14 +5476,15 @@ async def futures_page():
 @app.get("/api/futures/overview")
 async def get_futures_overview():
     """Stock Futures summary KPIs, regime, and capital utilization."""
-    from config.stockfut_loader import load_stockfut_config
+    from config.stockfut_loader import load_stockfut_config, load_stockfut_sectors
     from src.models.schema import get_open_stockfut_trades
     from src.stockfut.portfolio_risk import compute_portfolio_metrics, is_halted
 
     cfg = load_stockfut_config()
+    sector_map = load_stockfut_sectors()
     capital = float(cfg.get("capital_reference", 10000000.0))
     open_trades = get_open_stockfut_trades()
-    risk_metrics = compute_portfolio_metrics(open_trades, equity=capital, cfg=cfg)
+    risk_metrics = compute_portfolio_metrics(open_trades, equity=capital, cfg=cfg, sector_map=sector_map)
 
     # Today's realized P&L
     now_ist = datetime.now(timezone.utc).astimezone(_FUT_IST)
@@ -5512,6 +5513,8 @@ async def get_futures_overview():
 
     halted, halt_reason = is_halted()
     mode = "LIVE" if cfg.get("stockfut_live_enabled", False) else "PAPER"
+    regime_row = _q("SELECT regime FROM stockfut_watchlist WHERE regime IS NOT NULL ORDER BY id DESC LIMIT 1")
+    current_regime = regime_row[0]["regime"] if regime_row and regime_row[0].get("regime") else "NEUTRAL"
 
     return {
         "mode": mode,
@@ -5534,7 +5537,7 @@ async def get_futures_overview():
         "expectancy_r": round(expectancy_r, 2),
         "halted": halted,
         "halt_reason": halt_reason,
-        "regime": "NEUTRAL",
+        "regime": current_regime,
     }
 
 
@@ -5558,7 +5561,8 @@ async def get_futures_watchlist(date: str = ""):
             watchlist = get_latest_stockfut_watchlist(scan_date=date_str)
 
     def _sort_key(w):
-        status_rank = 0 if w.get("status") == "ARMED" else (1 if w.get("status") == "TRIGGERED" else 2)
+        status = w.get("status")
+        status_rank = 0 if status == "ARMED" else (1 if status == "RETRY" else (2 if status == "TRIGGERED" else 3))
         return (status_rank, -int(w.get("score", 0)))
 
     watchlist = sorted(watchlist, key=_sort_key)
@@ -5623,14 +5627,15 @@ async def get_futures_trades(limit: int = 50, offset: int = 0):
 @app.get("/api/futures/risk")
 async def get_futures_risk():
     """Real-time portfolio exposure, net directional tilt, and gap stress."""
-    from config.stockfut_loader import load_stockfut_config
+    from config.stockfut_loader import load_stockfut_config, load_stockfut_sectors
     from src.models.schema import get_open_stockfut_trades
     from src.stockfut.portfolio_risk import compute_portfolio_metrics, is_halted
 
     cfg = load_stockfut_config()
+    sector_map = load_stockfut_sectors()
     capital = float(cfg.get("capital_reference", 10000000.0))
     open_trades = get_open_stockfut_trades()
-    risk_info = compute_portfolio_metrics(open_trades, equity=capital, cfg=cfg)
+    risk_info = compute_portfolio_metrics(open_trades, equity=capital, cfg=cfg, sector_map=sector_map)
     halted, halt_reason = is_halted()
     risk_info["halted"] = halted
     risk_info["halt_reason"] = halt_reason

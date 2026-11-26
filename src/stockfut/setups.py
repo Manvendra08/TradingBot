@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config.stockfut_loader import load_stockfut_config
 from src.engine.capital_allocator import calculate_future_lots
@@ -43,10 +43,30 @@ class WatchRow:
     lots: int
     lot_size: int
     r_multiple: float
-    status: str = "ARMED"  # ARMED | TRIGGERED | EXPIRED | CANCELLED | SKIPPED
+    status: str = "ARMED"  # ARMED | RETRY | TRIGGERED | EXPIRED | CANCELLED | SKIPPED
     skip_reason: Optional[str] = None
     snapshot_id: Optional[str] = None
     atr: Optional[float] = None
+    regime: str = "NEUTRAL"
+
+
+_RETRYABLE_SKIP_PREFIXES = (
+    "PRICE_DRIFT_EXCEEDED",
+    "WIDE_SPREAD",
+    "MISSING_QUOTE",
+    "MAX_POSITIONS_REACHED",
+    "SECTOR_LIMIT_REACHED",
+    "GROSS_NOTIONAL_BREACH",
+    "NET_EXPOSURE_BREACH",
+    "GAP_STRESS_BREACH",
+    "MARGIN_HEADROOM_BREACH",
+)
+
+
+def is_retryable_skip(reason: str) -> bool:
+    """Return True if a 09:30 skip reason is transient and eligible for 12:20 RETRY."""
+    upper = str(reason or "").upper().strip()
+    return any(upper.startswith(p) for p in _RETRYABLE_SKIP_PREFIXES)
 
 
 def stock_bias(f: Dict[str, Any]) -> int:
@@ -295,6 +315,82 @@ def open_check(
     return True, "OK"
 
 
+def midday_recheck(
+    row: WatchRow,
+    quote: Dict[str, Any],
+    atr: float,
+    max_spread_pct: float = 0.10,
+    min_r_multiple: float = 1.25,
+    min_sl_atr: float = 0.4,
+    ban_list: Optional[Set[str]] = None,
+    events_dict: Optional[Dict[str, List[str]]] = None,
+    current_regime: Optional[str] = None,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, str]:
+    """
+    12:20 Midday RETRY gate check:
+    - Re-checks ban list, event blackout, and Bias x Regime matrix permission.
+    - Checks intraday high/low (`quote["ohlc"]`) to ensure SL was never touched.
+    - Enforces minimum remaining SL cushion (`min_sl_atr * atr`) to avoid falling knives.
+    - Enforces live reward-to-risk (`(T1 - LTP) / (LTP - SL) >= min_r_multiple`) to avoid chasing.
+    - Checks live bid-ask spread.
+    """
+    if not quote:
+        return False, "MISSING_QUOTE"
+
+    ltp = float(quote.get("price") or 0.0)
+    if ltp <= 0:
+        return False, "INVALID_LTP"
+
+    sym_upper = row.symbol.upper()
+    if ban_list and sym_upper in ban_list:
+        return False, "IN_BAN_LIST"
+    if events_dict and events_dict.get(sym_upper):
+        return False, "EVENT_BLACKOUT"
+
+    side_upper = row.side.upper()
+    is_long = side_upper in ("LONG", "BUY")
+
+    if current_regime:
+        reg = current_regime.upper()
+        perm = matrix_permission(row.bias, reg, cfg=cfg)
+        if not perm or perm[0] != side_upper or row.score < perm[1]:
+            return False, f"REGIME_FLIPPED ({row.bias}x{reg})"
+
+    ohlc = quote.get("ohlc") or {}
+    day_low = float(ohlc.get("low") or ltp)
+    day_high = float(ohlc.get("high") or ltp)
+
+    # 1. Intraday SL touch check (not just LTP)
+    if is_long and (ltp <= row.sl or day_low <= row.sl):
+        return False, f"SL_TOUCHED_INTRADAY (low={day_low:.2f} <= sl={row.sl:.2f})"
+    if not is_long and (ltp >= row.sl or day_high >= row.sl):
+        return False, f"SL_TOUCHED_INTRADAY (high={day_high:.2f} >= sl={row.sl:.2f})"
+
+    # 2. Remaining SL cushion check
+    sl_dist = (ltp - row.sl) if is_long else (row.sl - ltp)
+    if sl_dist <= 0:
+        return False, "SL_TOUCHED_INTRADAY"
+    if atr > 0 and sl_dist < min_sl_atr * atr:
+        return False, f"TOO_CLOSE_TO_SL ({sl_dist:.2f} < {min_sl_atr * atr:.2f})"
+
+    # 3. Live Reward-to-Risk check against original SL and T1
+    reward = (row.t1 - ltp) if is_long else (ltp - row.t1)
+    live_r = reward / sl_dist
+    if reward <= 0 or live_r < min_r_multiple:
+        return False, f"REWARD_RISK_INSUFFICIENT ({live_r:.2f}R < {min_r_multiple:.2f}R)"
+
+    # 4. Spread check
+    bid = float(quote.get("bid") or ltp)
+    ask = float(quote.get("ask") or ltp)
+    if bid > 0 and ask >= bid:
+        spread_pct = ((ask - bid) / ltp) * 100.0
+        if spread_pct > max_spread_pct:
+            return False, f"WIDE_SPREAD ({spread_pct:.3f}% > {max_spread_pct:.3f}%)"
+
+    return True, "OK"
+
+
 def build_watchlist(
     universe: List[Contract],
     features_map: Dict[str, Dict[str, Any]],
@@ -306,20 +402,25 @@ def build_watchlist(
     capital: float = 10000000.0,
     daily_candles_map: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     live_basis_map: Optional[Dict[str, float]] = None,
+    exclude_symbols: Optional[Set[str]] = None,
+    persist: bool = True,
 ) -> List[WatchRow]:
     """
     Build the EOD ARMED watchlist (max 20 names, sorted by score descending).
-    Freezes scan snapshot for each candidate.
+    Freezes scan snapshot for each candidate (skipped when persist=False).
     """
     config = cfg or load_stockfut_config()
     budget_pct = float(config.get("risk_budget_pct", 0.75))
     target_r_ratio = float(config.get("target_r_ratio", 1.6))
     max_risk_mult = float(config.get("max_risk_multiplier", 1.25))
+    excluded = {s.upper() for s in (exclude_symbols or set())}
 
     candidates: List[WatchRow] = []
 
     for contract in universe:
         sym = contract.symbol
+        if sym.upper() in excluded:
+            continue
         feat = features_map.get(sym)
         if not feat:
             continue
@@ -391,27 +492,29 @@ def build_watchlist(
             )
             continue
 
-        # 7. Create Scan Snapshot for provenance
-        snapshot_payload = {
-            "symbol": sym,
-            "tradingsymbol": contract.tradingsymbol,
-            "side": side,
-            "bias": b_label,
-            "score": score,
-            "plan": plan,
-            "features": feat,
-            "regime": regime,
-            "reversal_kind": rev_kind,
-        }
-        snap = create_scan_snapshot(
-            symbol=sym,
-            underlying=entry_price,
-            expiry=contract.expiry,
-            option_rows=[],
-            engine_verdict=b_label,
-            engine_confidence=score,
-            intel=snapshot_payload,
-        )
+        snap_id: Optional[str] = None
+        if persist:
+            snapshot_payload = {
+                "symbol": sym,
+                "tradingsymbol": contract.tradingsymbol,
+                "side": side,
+                "bias": b_label,
+                "score": score,
+                "plan": plan,
+                "features": feat,
+                "regime": regime,
+                "reversal_kind": rev_kind,
+            }
+            snap = create_scan_snapshot(
+                symbol=sym,
+                underlying=entry_price,
+                expiry=contract.expiry,
+                option_rows=[],
+                engine_verdict=b_label,
+                engine_confidence=score,
+                intel=snapshot_payload,
+            )
+            snap_id = snap.snapshot_id
 
         row = WatchRow(
             scan_date=asof_date,
@@ -430,8 +533,9 @@ def build_watchlist(
             lot_size=contract.lot_size,
             r_multiple=plan["r_t1"],
             status="ARMED",
-            snapshot_id=snap.snapshot_id,
+            snapshot_id=snap_id,
             atr=round(atr, 2),
+            regime=regime,
         )
         candidates.append(row)
 
@@ -440,30 +544,32 @@ def build_watchlist(
     top_watchlist = candidates[:20]
 
     # Persist to database
-    for row in top_watchlist:
-        try:
-            insert_stockfut_watchlist({
-                "scan_date": row.scan_date,
-                "scan_time": row.scan_time,
-                "symbol": row.symbol,
-                "tradingsymbol": row.tradingsymbol,
-                "expiry": row.expiry,
-                "side": row.side,
-                "bias": row.bias,
-                "score": row.score,
-                "planned_entry": row.planned_entry,
-                "sl": row.sl,
-                "t1": row.t1,
-                "t2": row.t2,
-                "lots": row.lots,
-                "lot_size": row.lot_size,
-                "r_multiple": row.r_multiple,
-                "status": row.status,
-                "skip_reason": row.skip_reason,
-                "snapshot_id": row.snapshot_id,
-                "atr": row.atr,
-            })
-        except Exception as e:
-            log.warning("Failed persisting watchlist row for %s: %s", row.symbol, e)
+    if persist:
+        for row in top_watchlist:
+            try:
+                insert_stockfut_watchlist({
+                    "scan_date": row.scan_date,
+                    "scan_time": row.scan_time,
+                    "symbol": row.symbol,
+                    "tradingsymbol": row.tradingsymbol,
+                    "expiry": row.expiry,
+                    "side": row.side,
+                    "bias": row.bias,
+                    "score": row.score,
+                    "planned_entry": row.planned_entry,
+                    "sl": row.sl,
+                    "t1": row.t1,
+                    "t2": row.t2,
+                    "lots": row.lots,
+                    "lot_size": row.lot_size,
+                    "r_multiple": row.r_multiple,
+                    "status": row.status,
+                    "skip_reason": row.skip_reason,
+                    "snapshot_id": row.snapshot_id,
+                    "atr": row.atr,
+                    "regime": row.regime,
+                })
+            except Exception as e:
+                log.warning("Failed persisting watchlist row for %s: %s", row.symbol, e)
 
     return top_watchlist

@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from config.stockfut_loader import load_stockfut_config, DEFAULT_STOCKFUT_CONFIG
+from config.stockfut_loader import load_stockfut_config, load_stockfut_sectors, DEFAULT_STOCKFUT_CONFIG
 from src.models.schema import (
     init_db,
     insert_stockfut_trade,
@@ -35,6 +35,9 @@ def test_loader_loads_valid_config():
     assert cfg["min_lots"] == 2
     assert cfg["target_r_ratio"] == 1.6
     assert "STRONG_BULL" in cfg["matrix_permissions"]
+    sectors = load_stockfut_sectors()
+    assert sectors.get("RELIANCE") == "OIL_GAS"
+    assert sectors.get("HDFCBANK") == "BANKING"
 
 
 def test_trade_roundtrip_persists_split_lots():

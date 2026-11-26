@@ -42,6 +42,7 @@ class PaperExecutor:
         row: WatchRow,
         quote: Dict[str, Any],
         asof: Optional[datetime] = None,
+        order_tag: Optional[str] = None,
     ) -> Optional[int]:
         """
         Execute paper entry at 09:30 quote +/- (half spread + 1 tick).
@@ -90,19 +91,24 @@ class PaperExecutor:
             "status": "OPEN",
             "snapshot_id": row.snapshot_id,
             "mode": "PAPER",
-            "order_tag": f"SF_PAPER_{row.symbol}",
+            "order_tag": order_tag or f"SF_PAPER_{row.symbol}",
         }
 
         try:
             trade_id = insert_stockfut_trade(trade_data)
             log.info(
-                "[%s] Paper trade #%d entered: %s %d lots @ ₹%.2f (SL: ₹%.2f, T1: ₹%.2f, T2: ₹%.2f)",
-                row.symbol, trade_id, row.side, row.lots, fill_price, row.sl, row.t1, row.t2,
+                "[%s] Paper trade #%d entered (%s): %s %d lots @ ₹%.2f (SL: ₹%.2f, T1: ₹%.2f, T2: ₹%.2f)",
+                row.symbol, trade_id, trade_data["order_tag"], row.side, row.lots, fill_price, row.sl, row.t1, row.t2,
             )
             log_stockfut_decision(
                 kind="PAPER_ENTRY",
                 symbol=row.symbol,
-                payload={"trade_id": trade_id, "fill_price": fill_price, "lots": row.lots},
+                payload={
+                    "trade_id": trade_id,
+                    "fill_price": fill_price,
+                    "lots": row.lots,
+                    "order_tag": trade_data["order_tag"],
+                },
                 snapshot_id=row.snapshot_id,
             )
             return trade_id

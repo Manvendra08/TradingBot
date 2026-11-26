@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from datetime import date, datetime, time as dt_time, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config.holidays import get_nse_holidays
 from config.runtime_config import (
@@ -26,7 +26,7 @@ from config.runtime_config import (
     is_stockfut_paper_enabled,
     load_runtime_config,
 )
-from config.stockfut_loader import load_stockfut_config
+from config.stockfut_loader import load_stockfut_config, load_stockfut_sectors
 from src.fetchers.kite_fetcher import get_kite_data_client
 from src.fetchers.nse_eod_fetcher import fetch_ban_list, fetch_events, fetch_mwpl
 from src.alerts.futures_digest import (
@@ -35,6 +35,7 @@ from src.alerts.futures_digest import (
     send_trade_event_alert,
 )
 from src.models.schema import (
+    get_latest_stockfut_decision,
     get_latest_stockfut_watchlist,
     get_open_stockfut_trades,
     get_stockfut_trade_by_id,
@@ -51,7 +52,9 @@ from src.stockfut.setups import (
     bias_label,
     build_watchlist,
     is_daily_reversal,
+    is_retryable_skip,
     matrix_permission,
+    midday_recheck,
     open_check,
     stock_bias,
     WatchRow,
@@ -176,6 +179,8 @@ def job_stockfut_morning_execution() -> None:
         return
 
     refreshed_open = get_open_stockfut_trades()
+    open_symbols: Set[str] = {str(t["symbol"]).upper() for t in refreshed_open}
+    sector_map = load_stockfut_sectors()
     equity = float(cfg.get("capital_reference", 10000000.0))
 
     # EOD scans run on Day T (or last trading session); morning execution runs at Day T+1 09:30 IST.
@@ -208,30 +213,16 @@ def job_stockfut_morning_execution() -> None:
     rejections: List[Dict[str, Any]] = []
 
     for r_dict in armed_rows:
-        row = WatchRow(
-            scan_date=r_dict["scan_date"],
-            scan_time=r_dict["scan_time"],
-            symbol=r_dict["symbol"],
-            tradingsymbol=r_dict["tradingsymbol"],
-            expiry=r_dict["expiry"],
-            side=r_dict["side"],
-            bias=r_dict["bias"],
-            score=int(r_dict["score"]),
-            planned_entry=float(r_dict["planned_entry"]),
-            sl=float(r_dict["sl"]),
-            t1=float(r_dict["t1"]),
-            t2=float(r_dict["t2"]),
-            lots=int(r_dict["lots"]),
-            lot_size=int(r_dict["lot_size"]),
-            r_multiple=float(r_dict["r_multiple"]),
-            status=r_dict["status"],
-            snapshot_id=r_dict.get("snapshot_id"),
-            atr=float(r_dict["atr"]) if r_dict.get("atr") else None,
-        )
+        row = _watchlist_dict_to_row(r_dict)
+        if row.symbol.upper() in open_symbols:
+            update_stockfut_watchlist_status(r_dict["id"], status="SKIPPED", skip_reason="ALREADY_OPEN")
+            rejections.append({"symbol": row.symbol, "reason": "ALREADY_OPEN"})
+            continue
+
         quote = live_quotes.get(row.tradingsymbol)
         if not quote:
-            update_stockfut_watchlist_status(r_dict["id"], status="SKIPPED", skip_reason="MISSING_QUOTE")
-            rejections.append({"symbol": row.symbol, "reason": "MISSING_QUOTE"})
+            update_stockfut_watchlist_status(r_dict["id"], status="RETRY", skip_reason="MISSING_QUOTE")
+            rejections.append({"symbol": row.symbol, "reason": "MISSING_QUOTE (RETRY @ 12:20)"})
             continue
 
         # Open check — use stored ATR from EOD scan; fall back to SL distance
@@ -245,11 +236,13 @@ def job_stockfut_morning_execution() -> None:
             max_spread_pct=float(cfg.get("max_spread_pct", 0.10)),
         )
         if not passed_open:
-            update_stockfut_watchlist_status(r_dict["id"], status="SKIPPED", skip_reason=open_reason)
-            rejections.append({"symbol": row.symbol, "reason": open_reason})
+            next_status = "RETRY" if is_retryable_skip(open_reason) else "SKIPPED"
+            update_stockfut_watchlist_status(r_dict["id"], status=next_status, skip_reason=open_reason)
+            suffix = " (RETRY @ 12:20)" if next_status == "RETRY" else ""
+            rejections.append({"symbol": row.symbol, "reason": f"{open_reason}{suffix}"})
             continue
 
-        # Portfolio risk check
+        # Portfolio risk check (with sector map)
         c_cand = {
             "symbol": row.symbol,
             "side": row.side,
@@ -257,14 +250,18 @@ def job_stockfut_morning_execution() -> None:
             "lot_size": row.lot_size,
             "entry_price": float(quote["price"]),
         }
-        passed_risk, risk_reason = check_entry(c_cand, refreshed_open, equity=equity, cfg=cfg)
+        passed_risk, risk_reason = check_entry(
+            c_cand, refreshed_open, equity=equity, cfg=cfg, sector_map=sector_map
+        )
         if not passed_risk:
-            update_stockfut_watchlist_status(r_dict["id"], status="SKIPPED", skip_reason=risk_reason)
-            rejections.append({"symbol": row.symbol, "reason": risk_reason})
+            next_status = "RETRY" if is_retryable_skip(risk_reason) else "SKIPPED"
+            update_stockfut_watchlist_status(r_dict["id"], status=next_status, skip_reason=risk_reason)
+            suffix = " (RETRY @ 12:20)" if next_status == "RETRY" else ""
+            rejections.append({"symbol": row.symbol, "reason": f"{risk_reason}{suffix}"})
             continue
 
         # Execute
-        trade_id = executor.enter(row, quote=quote)
+        trade_id = executor.enter(row, quote=quote, order_tag=f"SF_PAPER_0930_{row.symbol}")
         if trade_id:
             update_stockfut_watchlist_status(r_dict["id"], status="TRIGGERED")
             fills.append({
@@ -277,6 +274,7 @@ def job_stockfut_morning_execution() -> None:
                 "t1_price": row.t1,
             })
             refreshed_open = get_open_stockfut_trades()
+            open_symbols.add(row.symbol.upper())
 
     try:
         send_morning_execution_alert(today_str, fills, rejections, refreshed_open)
@@ -284,109 +282,380 @@ def job_stockfut_morning_execution() -> None:
         log.warning("[STOCKFUT 09:30] Morning alert failed: %s", e)
 
 
+def _watchlist_dict_to_row(r_dict: Dict[str, Any]) -> WatchRow:
+    """Convert a stockfut_watchlist database row dict to WatchRow."""
+    return WatchRow(
+        scan_date=r_dict["scan_date"],
+        scan_time=r_dict["scan_time"],
+        symbol=r_dict["symbol"],
+        tradingsymbol=r_dict["tradingsymbol"],
+        expiry=r_dict["expiry"],
+        side=r_dict["side"],
+        bias=r_dict["bias"],
+        score=int(r_dict["score"]),
+        planned_entry=float(r_dict["planned_entry"]),
+        sl=float(r_dict["sl"]),
+        t1=float(r_dict["t1"]),
+        t2=float(r_dict["t2"]),
+        lots=int(r_dict["lots"]),
+        lot_size=int(r_dict["lot_size"]),
+        r_multiple=float(r_dict["r_multiple"]),
+        status=r_dict["status"],
+        snapshot_id=r_dict.get("snapshot_id"),
+        atr=float(r_dict["atr"]) if r_dict.get("atr") else None,
+        regime=str(r_dict.get("regime") or "NEUTRAL"),
+    )
+
+
+def _compute_live_regime(
+    client: Any,
+    nifty_daily: Optional[List[Dict[str, Any]]] = None,
+    features_map: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> str:
+    """Compute current RISK_ON | NEUTRAL | RISK_OFF regime from Nifty, breadth, and India VIX."""
+    now_dt = datetime.now(IST)
+    if nifty_daily is None:
+        try:
+            nifty_tok = client.resolve_instrument_token("NIFTY") or 256265
+            nifty_daily = client.get_historical_candles(
+                nifty_tok, interval="day", from_date=now_dt - timedelta(days=100), to_date=now_dt
+            )
+        except Exception as e:
+            log.debug("Regime Nifty fetch error: %s", e)
+            nifty_daily = []
+
+    breadth: Optional[float] = None
+    if features_map:
+        valid = [f for f in features_map.values() if float(f.get("ema50") or 0.0) > 0]
+        if valid:
+            above = sum(1 for f in valid if float(f.get("close") or 0.0) > float(f["ema50"]))
+            breadth = (above / len(valid)) * 100.0
+
+    vix_val: Optional[float] = None
+    vix_chg: Optional[float] = None
+    try:
+        vix_tok = client.resolve_instrument_token("INDIAVIX") or 264969
+        vix_daily = client.get_historical_candles(
+            vix_tok, interval="day", from_date=now_dt - timedelta(days=10), to_date=now_dt
+        )
+        if vix_daily:
+            vix_val = float(vix_daily[-1]["close"])
+            if len(vix_daily) >= 2 and float(vix_daily[-2]["close"]) > 0:
+                prev_vix = float(vix_daily[-2]["close"])
+                vix_chg = ((vix_val - prev_vix) / prev_vix) * 100.0
+    except Exception as e:
+        log.debug("Regime VIX fetch error: %s", e)
+
+    return market_regime(
+        index_daily=nifty_daily,
+        universe_breadth_pct_above_ema50=breadth,
+        vix_value=vix_val,
+        vix_change_pct=vix_chg,
+    )
+
+
+def job_stockfut_midday_retry() -> None:
+    """
+    12:20 IST: Re-evaluate transient 09:30 RETRY setups.
+    Validates intraday high/low SL integrity, ban list, regime, SL cushion, and live R >= min_r.
+    Unfilled RETRY rows expire after 12:20 to avoid late-day chasing.
+    """
+    if not is_trading_day():
+        return
+
+    rt_cfg = load_runtime_config()
+    if rt_cfg.get("trading_paused", False):
+        return
+    if not is_stockfut_paper_enabled() and not is_stockfut_live_enabled():
+        return
+
+    today_date = datetime.now(IST).date()
+    today_str = today_date.strftime("%Y-%m-%d")
+    prev_session_str = prev_trading_date(today_date).strftime("%Y-%m-%d")
+
+    watchlist = get_latest_stockfut_watchlist(scan_date=None)
+    retry_rows: List[Dict[str, Any]] = []
+    for r in watchlist:
+        if r.get("status") != "RETRY":
+            continue
+        r_scan_date = str(r.get("scan_date") or "")
+        if r_scan_date >= prev_session_str:
+            retry_rows.append(r)
+        else:
+            update_stockfut_watchlist_status(r["id"], status="EXPIRED", skip_reason=f"STALE_RETRY_{r_scan_date}")
+
+    if not retry_rows:
+        log.info("[STOCKFUT 12:20] No RETRY setups pending for %s", today_str)
+        return
+
+    log.info("[STOCKFUT 12:20] Evaluating %d RETRY setups...", len(retry_rows))
+    cfg = load_stockfut_config()
+    client = get_kite_data_client()
+    executor = PaperExecutor(cfg=cfg)
+    sector_map = load_stockfut_sectors()
+    equity = float(cfg.get("capital_reference", 10000000.0))
+
+    live_quotes = client.get_futures_quotes([r["tradingsymbol"] for r in retry_rows])
+    try:
+        ban_list = fetch_ban_list()
+    except Exception:
+        ban_list = set()
+    try:
+        events_dict = fetch_events(days=int(cfg.get("events_blackout_sessions", 7)))
+    except Exception:
+        events_dict = {}
+    current_regime = _compute_live_regime(client)
+
+    refreshed_open = get_open_stockfut_trades()
+    open_symbols: Set[str] = {str(t["symbol"]).upper() for t in refreshed_open}
+    fills: List[Dict[str, Any]] = []
+    rejections: List[Dict[str, Any]] = []
+
+    for r_dict in retry_rows:
+        row = _watchlist_dict_to_row(r_dict)
+        if row.symbol.upper() in open_symbols:
+            update_stockfut_watchlist_status(r_dict["id"], status="EXPIRED", skip_reason="ALREADY_OPEN")
+            rejections.append({"symbol": row.symbol, "reason": "ALREADY_OPEN"})
+            continue
+
+        quote = live_quotes.get(row.tradingsymbol)
+        stored_atr = float(r_dict.get("atr") or 0.0)
+        atr = stored_atr if stored_atr > 0 else abs(row.planned_entry - row.sl)
+        passed_mid, mid_reason = midday_recheck(
+            row,
+            quote=quote or {},
+            atr=atr,
+            max_spread_pct=float(cfg.get("max_spread_pct", 0.10)),
+            min_r_multiple=float(cfg.get("midday_min_r_multiple", 1.25)),
+            min_sl_atr=float(cfg.get("midday_min_sl_atr", 0.4)),
+            ban_list=ban_list,
+            events_dict=events_dict,
+            current_regime=current_regime,
+            cfg=cfg,
+        )
+        if not passed_mid:
+            update_stockfut_watchlist_status(r_dict["id"], status="EXPIRED", skip_reason=mid_reason)
+            rejections.append({"symbol": row.symbol, "reason": mid_reason})
+            continue
+
+        c_cand = {
+            "symbol": row.symbol,
+            "side": row.side,
+            "lots": row.lots,
+            "lot_size": row.lot_size,
+            "entry_price": float(quote["price"]),
+        }
+        passed_risk, risk_reason = check_entry(
+            c_cand, refreshed_open, equity=equity, cfg=cfg, sector_map=sector_map
+        )
+        if not passed_risk:
+            update_stockfut_watchlist_status(r_dict["id"], status="EXPIRED", skip_reason=risk_reason)
+            rejections.append({"symbol": row.symbol, "reason": risk_reason})
+            continue
+
+        trade_id = executor.enter(row, quote=quote, order_tag=f"SF_PAPER_1220_RETRY_{row.symbol}")
+        if trade_id:
+            update_stockfut_watchlist_status(r_dict["id"], status="TRIGGERED")
+            fills.append({
+                "tradingsymbol": row.tradingsymbol,
+                "symbol": row.symbol,
+                "direction": row.side,
+                "lots": row.lots,
+                "entry_price": float(quote["price"]),
+                "sl_price": row.sl,
+                "t1_price": row.t1,
+            })
+            refreshed_open = get_open_stockfut_trades()
+            open_symbols.add(row.symbol.upper())
+
+    try:
+        send_morning_execution_alert(
+            today_str, fills, rejections, refreshed_open, window_label="12:20 IST RETRY"
+        )
+    except Exception as e:
+        log.warning("[STOCKFUT 12:20] Midday retry alert failed: %s", e)
+
+
+def _run_eod_scan_pipeline(persist: bool = True, asof_time: str = "19:30:00") -> Tuple[List[WatchRow], str, str]:
+    """Shared universe scan pipeline used by both 15:10 provisional logger and 19:30 EOD scan."""
+    cfg = load_stockfut_config()
+    client = get_kite_data_client()
+    builder = UniverseBuilder(cfg=cfg, kite_client=client)
+
+    now_dt = datetime.now(IST)
+    asof = now_dt.date()
+    asof_str = asof.strftime("%Y-%m-%d")
+    equity = float(cfg.get("capital_reference", 10000000.0))
+
+    universe = builder.build_universe(asof=asof, capital=equity)
+    if not universe:
+        return [], "NEUTRAL", asof_str
+
+    features_map: Dict[str, Dict[str, Any]] = {}
+    zones_map: Dict[str, List[Any]] = {}
+    candles_map: Dict[str, List[Dict[str, Any]]] = {}
+    from_date = now_dt - timedelta(days=120)
+
+    # Benchmark: Nifty 50 daily candles for relative strength & regime
+    nifty_tok = client.resolve_instrument_token("NIFTY") or 256265
+    nifty_daily = client.get_historical_candles(nifty_tok, interval="day", from_date=from_date, to_date=now_dt)
+
+    # Pass 1: Collect cash candles, futures OI series, and 20-day returns across universe
+    raw_stock_data: Dict[str, Dict[str, Any]] = {}
+    universe_20d_returns: List[float] = []
+
+    for contract in universe:
+        sym = contract.symbol
+        try:
+            token = client.resolve_instrument_token(sym)
+            if not token:
+                continue
+            daily = client.get_historical_candles(
+                instrument_token=token,
+                interval="day",
+                from_date=from_date,
+                to_date=now_dt,
+            )
+            if not daily or len(daily) < 25:
+                continue
+
+            f_candles = client.get_historical_candles(
+                instrument_token=contract.token,
+                interval="day",
+                from_date=from_date,
+                to_date=now_dt,
+            ) if contract.token else []
+            oi_series = [b.get("oi", 0) for b in f_candles] if f_candles else []
+
+            closes = [float(b["close"]) for b in daily]
+            ret_20d = (closes[-1] - closes[-20]) / closes[-20] * 100.0 if len(closes) >= 20 and closes[-20] > 0 else 0.0
+            universe_20d_returns.append(ret_20d)
+
+            raw_stock_data[sym] = {
+                "daily": daily,
+                "oi_series": oi_series,
+                "contract": contract,
+            }
+            time.sleep(0.03)
+        except Exception as e:
+            log.debug("[%s] Scan candle fetch error: %s", sym, e)
+
+    # Pass 2: Compute full features with cross-universe relative strength & futures OI
+    for sym, d in raw_stock_data.items():
+        daily = d["daily"]
+        oi_series = d["oi_series"]
+        candles_map[sym] = daily
+        feat = compute_features(
+            sym,
+            daily,
+            index_daily=nifty_daily,
+            universe_20d_returns=universe_20d_returns,
+            combined_oi_daily=oi_series,
+        )
+        if not feat:
+            continue
+        features_map[sym] = feat
+        atr = float(feat.get("atr14", 10.0))
+        zones_map[sym] = build_zones(daily, atr=atr)
+
+    regime = _compute_live_regime(client, nifty_daily=nifty_daily, features_map=features_map)
+    open_symbols: Set[str] = {str(t["symbol"]).upper() for t in get_open_stockfut_trades()}
+
+    top_watchlist = build_watchlist(
+        universe=universe,
+        features_map=features_map,
+        zones_map=zones_map,
+        regime=regime,
+        asof_date=asof_str,
+        asof_time=asof_time,
+        cfg=cfg,
+        capital=equity,
+        daily_candles_map=candles_map,
+        exclude_symbols=open_symbols,
+        persist=persist,
+    )
+    return top_watchlist, regime, asof_str
+
+
+def job_stockfut_provisional_scan() -> None:
+    """15:10 IST: Read-only provisional scan logged for 19:30 confirmation diff telemetry."""
+    if not is_trading_day():
+        return
+    log.info("[STOCKFUT 15:10] Running read-only provisional scan for 19:30 diff telemetry...")
+    try:
+        picks, regime, asof_str = _run_eod_scan_pipeline(persist=False, asof_time="15:10:00")
+        payload = {
+            "scan_date": asof_str,
+            "regime": regime,
+            "count": len(picks),
+            "picks": [
+                {
+                    "symbol": w.symbol,
+                    "side": w.side,
+                    "score": w.score,
+                    "planned_entry": w.planned_entry,
+                    "sl": w.sl,
+                    "t1": w.t1,
+                    "atr": w.atr,
+                }
+                for w in picks
+            ],
+        }
+        log_stockfut_decision(kind="PROVISIONAL_1510", symbol="UNIVERSE", payload=payload)
+        log.info(
+            "[STOCKFUT 15:10] Provisional scan logged: %d candidates (regime=%s): %s",
+            len(picks), regime, [w.symbol for w in picks],
+        )
+    except Exception as e:
+        log.error("[STOCKFUT 15:10] Provisional scan failed: %s", e)
+
+
 def job_stockfut_eod_scan() -> None:
-    """19:30 IST: Run EOD scan across universe, generate ARMED watchlist."""
+    """19:30 IST: Run EOD scan across universe, generate ARMED watchlist, and diff 15:10 telemetry."""
     if not is_trading_day():
         return
     log.info("[STOCKFUT 19:30] Running EOD Stock Futures Scan...")
     try:
-        cfg = load_stockfut_config()
-        client = get_kite_data_client()
-        builder = UniverseBuilder(cfg=cfg, kite_client=client)
-
-        asof = datetime.now(IST).date()
-        asof_str = asof.strftime("%Y-%m-%d")
-        equity = float(cfg.get("capital_reference", 10000000.0))
-
-        universe = builder.build_universe(asof=asof, capital=equity)
-        log.info("[STOCKFUT 19:30] Eligible universe: %d contracts", len(universe))
-        if not universe:
-            return
-
-        features_map: Dict[str, Dict[str, Any]] = {}
-        zones_map: Dict[str, List[Any]] = {}
-        candles_map: Dict[str, List[Dict[str, Any]]] = {}
-        now_dt = datetime.now(IST)
-        from_date = now_dt - timedelta(days=120)
-
-        # Benchmark: Nifty 50 daily candles for relative strength
-        nifty_tok = client.resolve_instrument_token("NIFTY") or 256265
-        nifty_daily = client.get_historical_candles(nifty_tok, interval="day", from_date=from_date, to_date=now_dt)
-
-        # Pass 1: Collect cash candles, futures OI series, and 20-day returns across universe
-        raw_stock_data: Dict[str, Dict[str, Any]] = {}
-        universe_20d_returns: List[float] = []
-
-        for contract in universe:
-            sym = contract.symbol
-            try:
-                # Resolve cash equity token for clean levels
-                token = client.resolve_instrument_token(sym)
-                if not token:
-                    continue
-                daily = client.get_historical_candles(
-                    instrument_token=token,
-                    interval="day",
-                    from_date=from_date,
-                    to_date=now_dt,
-                )
-                if not daily or len(daily) < 25:
-                    continue
-
-                # Fetch futures candles for real derivative open interest
-                f_candles = client.get_historical_candles(
-                    instrument_token=contract.token,
-                    interval="day",
-                    from_date=from_date,
-                    to_date=now_dt,
-                ) if contract.token else []
-                oi_series = [b.get("oi", 0) for b in f_candles] if f_candles else []
-
-                closes = [float(b["close"]) for b in daily]
-                ret_20d = (closes[-1] - closes[-20]) / closes[-20] * 100.0 if len(closes) >= 20 and closes[-20] > 0 else 0.0
-                universe_20d_returns.append(ret_20d)
-
-                raw_stock_data[sym] = {
-                    "daily": daily,
-                    "oi_series": oi_series,
-                    "contract": contract,
-                }
-                time.sleep(0.03)  # Smooth rate limiting
-            except Exception as e:
-                log.debug("[%s] EOD scan candle fetch error: %s", sym, e)
-
-        # Pass 2: Compute full features with cross-universe relative strength & futures OI
-        for sym, d in raw_stock_data.items():
-            daily = d["daily"]
-            oi_series = d["oi_series"]
-            candles_map[sym] = daily
-            feat = compute_features(
-                sym,
-                daily,
-                index_daily=nifty_daily,
-                universe_20d_returns=universe_20d_returns,
-                combined_oi_daily=oi_series,
-            )
-            if not feat:
-                continue
-            features_map[sym] = feat
-
-            atr = float(feat.get("atr14", 10.0))
-            zones = build_zones(daily, atr=atr)
-            zones_map[sym] = zones
-
-        # Build and persist watchlist
-        top_watchlist = build_watchlist(
-            universe=universe,
-            features_map=features_map,
-            zones_map=zones_map,
-            regime="NEUTRAL",
-            asof_date=asof_str,
-            cfg=cfg,
-            capital=equity,
-            daily_candles_map=candles_map,
+        top_watchlist, regime, asof_str = _run_eod_scan_pipeline(persist=True, asof_time="19:30:00")
+        log.info(
+            "[STOCKFUT 19:30] Scan complete: %d ARMED setups armed for tomorrow (regime=%s)",
+            len(top_watchlist), regime,
         )
-        log.info("[STOCKFUT 19:30] Scan complete: %d ARMED setups armed for tomorrow", len(top_watchlist))
+
+        # Log 15:10 provisional vs 19:30 bhavcopy agreement telemetry if a 15:10 log ran today
+        try:
+            prov = get_latest_stockfut_decision("PROVISIONAL_1510", symbol="UNIVERSE")
+            prov_payload = (prov or {}).get("payload") or {}
+            if prov_payload.get("scan_date") == asof_str:
+                prov_map = {p["symbol"]: p.get("side") for p in prov_payload.get("picks", [])}
+                eod_map = {w.symbol: w.side for w in top_watchlist}
+                confirmed = sorted(s for s, sd in prov_map.items() if eod_map.get(s) == sd)
+                invalidated = sorted(s for s in prov_map if s not in confirmed)
+                new_at_eod = sorted(s for s in eod_map if s not in prov_map)
+                fail_pct = round((len(invalidated) / len(prov_map)) * 100.0, 1) if prov_map else 0.0
+                log_stockfut_decision(
+                    kind="PROVISIONAL_DIFF_1930",
+                    symbol="UNIVERSE",
+                    payload={
+                        "scan_date": asof_str,
+                        "provisional_regime": prov_payload.get("regime"),
+                        "eod_regime": regime,
+                        "provisional_count": len(prov_map),
+                        "confirmed_count": len(confirmed),
+                        "invalidated_count": len(invalidated),
+                        "invalidated_pct": fail_pct,
+                        "confirmed_symbols": confirmed,
+                        "invalidated_symbols": invalidated,
+                        "new_at_eod_symbols": new_at_eod,
+                    },
+                )
+                log.info(
+                    "[STOCKFUT 19:30] Provisional 15:10 vs 19:30 diff: %d/%d confirmed, %d invalidated (%.1f%%)",
+                    len(confirmed), len(prov_map), len(invalidated), fail_pct,
+                )
+        except Exception as e:
+            log.debug("[STOCKFUT 19:30] Provisional diff logging error: %s", e)
+
         try:
             wl_dicts = [
                 {
@@ -405,7 +674,7 @@ def job_stockfut_eod_scan() -> None:
                 }
                 for w in top_watchlist
             ]
-            send_eod_watchlist_alert(asof_str, "NEUTRAL", wl_dicts)
+            send_eod_watchlist_alert(asof_str, regime, wl_dicts)
         except Exception as e:
             log.warning("[STOCKFUT 19:30] EOD watchlist alert failed: %s", e)
     except Exception as e:
@@ -520,18 +789,29 @@ def register_stockfut_jobs(scheduler: Any) -> None:
         replace_existing=True,
     )
 
-    # 3. Post-Market Close EOD Scan (Mon-Fri at 15:45 IST on final completed bars)
+    # 3. 12:20 Midday Retry Routine for transient 09:30 RETRY rows (Mon-Fri)
     scheduler.add_job(
-        job_stockfut_eod_scan,
+        job_stockfut_midday_retry,
         "cron",
-        hour=15,
-        minute=45,
+        hour=12,
+        minute=20,
         day_of_week="mon-fri",
-        id="stockfut_eod_scan_close",
+        id="stockfut_midday_retry_1220",
         replace_existing=True,
     )
 
-    # 4. Evening EOD Scan on final settlement bhavcopy (Mon-Fri at 19:30 IST)
+    # 4. 15:10 Provisional Scan (read-only telemetry for 19:30 agreement tracking)
+    scheduler.add_job(
+        job_stockfut_provisional_scan,
+        "cron",
+        hour=15,
+        minute=10,
+        day_of_week="mon-fri",
+        id="stockfut_provisional_scan_1510",
+        replace_existing=True,
+    )
+
+    # 5. Evening EOD Scan on final settlement bhavcopy (Mon-Fri at 19:30 IST)
     scheduler.add_job(
         job_stockfut_eod_scan,
         "cron",

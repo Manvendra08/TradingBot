@@ -7,6 +7,8 @@ from src.stockfut.setups import (
     matrix_permission,
     is_daily_reversal,
     open_check,
+    midday_recheck,
+    is_retryable_skip,
     WatchRow,
 )
 
@@ -158,3 +160,91 @@ def test_open_check_gates():
         max_spread_pct=0.10,
     )
     assert ok_cfg_drift is True, reason_cfg_drift
+
+
+def test_retryable_skip_classification():
+    assert is_retryable_skip("PRICE_DRIFT_EXCEEDED (15.30 > 13.49)") is True
+    assert is_retryable_skip("WIDE_SPREAD (0.120% > 0.100%)") is True
+    assert is_retryable_skip("MAX_POSITIONS_REACHED (6 >= 6)") is True
+    assert is_retryable_skip("SL_BREACHED_AT_OPEN (1255.0 <= 1260.0)") is False
+    assert is_retryable_skip("IN_BAN_LIST") is False
+    assert is_retryable_skip("ALREADY_OPEN") is False
+
+
+def test_midday_recheck_gates():
+    row = WatchRow(
+        scan_date="2026-11-25",
+        scan_time="19:30:00",
+        symbol="RELIANCE",
+        tradingsymbol="RELIANCE26DECFUT",
+        expiry="2026-12-31",
+        side="LONG",
+        bias="STRONG_BULL",
+        score=85,
+        planned_entry=1300.0,
+        sl=1260.0,
+        t1=1364.0,
+        t2=1400.0,
+        lots=2,
+        lot_size=250,
+        r_multiple=1.6,
+    )
+    atr = 30.0
+
+    # Valid pullback with intraday low safely above SL: R = (1364-1304)/(1304-1260) = 1.36R >= 1.25R
+    ok, reason = midday_recheck(
+        row,
+        quote={"price": 1304.0, "bid": 1303.9, "ask": 1304.1, "ohlc": {"low": 1285.0, "high": 1310.0}},
+        atr=atr,
+    )
+    assert ok is True, reason
+
+    # SL touched earlier in morning session even though LTP recovered
+    ok_touch, reason_touch = midday_recheck(
+        row,
+        quote={"price": 1300.0, "bid": 1299.9, "ask": 1300.1, "ohlc": {"low": 1259.5, "high": 1305.0}},
+        atr=atr,
+    )
+    assert ok_touch is False and "SL_TOUCHED_INTRADAY" in reason_touch
+
+    # Too close to SL (cushion < 0.4 * 30 = 12.0): rejects falling knife despite high R
+    ok_knife, reason_knife = midday_recheck(
+        row,
+        quote={"price": 1265.0, "bid": 1264.9, "ask": 1265.1, "ohlc": {"low": 1263.0, "high": 1290.0}},
+        atr=atr,
+    )
+    assert ok_knife is False and "TOO_CLOSE_TO_SL" in reason_knife
+
+    # Chased too high (LTP 1320 -> R = 44/60 = 0.73R < 1.25R)
+    ok_chase, reason_chase = midday_recheck(
+        row,
+        quote={"price": 1320.0, "bid": 1319.9, "ask": 1320.1, "ohlc": {"low": 1295.0, "high": 1322.0}},
+        atr=atr,
+    )
+    assert ok_chase is False and "REWARD_RISK_INSUFFICIENT" in reason_chase
+
+    # Regime flipped against BULL LONG (BULL x RISK_OFF is disallowed in matrix)
+    bull_row = WatchRow(
+        scan_date="2026-11-25",
+        scan_time="19:30:00",
+        symbol="RELIANCE",
+        tradingsymbol="RELIANCE26DECFUT",
+        expiry="2026-12-31",
+        side="LONG",
+        bias="BULL",
+        score=78,
+        planned_entry=1300.0,
+        sl=1260.0,
+        t1=1364.0,
+        t2=1400.0,
+        lots=2,
+        lot_size=250,
+        r_multiple=1.6,
+    )
+    ok_reg, reason_reg = midday_recheck(
+        bull_row,
+        quote={"price": 1304.0, "bid": 1303.9, "ask": 1304.1, "ohlc": {"low": 1290.0, "high": 1310.0}},
+        atr=atr,
+        current_regime="RISK_OFF",
+    )
+    assert ok_reg is False and "REGIME_FLIPPED" in reason_reg

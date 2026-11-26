@@ -69,10 +69,12 @@ def build_morning_execution_digest(
     fills: List[Dict[str, Any]],
     rejections: List[Dict[str, Any]],
     open_trades: List[Dict[str, Any]],
+    window_label: str = "09:30 IST",
 ) -> str:
-    """Format the 09:35 IST Morning Execution Telegram digest."""
+    """Format the 09:30 / 12:20 IST Execution Telegram digest."""
+    title = "STOCK FUTURES MIDDAY RETRY" if "12:20" in window_label else "STOCK FUTURES MORNING EXECUTION"
     lines = [
-        f"⚡ <b>STOCK FUTURES MORNING EXECUTION</b> | {date_str} 09:30 IST",
+        f"⚡ <b>{title}</b> | {date_str} {window_label}",
         f"💼 <b>Active Portfolio:</b> {len(open_trades)}/6 open positions",
         "──────────────────────────",
     ]
@@ -167,10 +169,13 @@ def send_morning_execution_alert(
     fills: List[Dict[str, Any]],
     rejections: List[Dict[str, Any]],
     open_trades: List[Dict[str, Any]],
+    window_label: str = "09:30 IST",
 ) -> bool:
-    """Dispatch morning execution alert via Telegram."""
+    """Dispatch execution alert via Telegram."""
     try:
-        text = build_morning_execution_digest(date_str, fills, rejections, open_trades)
+        text = build_morning_execution_digest(
+            date_str, fills, rejections, open_trades, window_label=window_label
+        )
         return send_text(text)
     except Exception as e:
         log.error("Failed to dispatch morning execution alert: %s", e)

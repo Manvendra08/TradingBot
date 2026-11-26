@@ -13,6 +13,23 @@ from typing import Any, Dict
 logger = logging.getLogger("stockfut.config")
 
 CONFIG_PATH = Path(__file__).resolve().parent / "stockfut.json"
+SECTORS_PATH = Path(__file__).resolve().parent / "stockfut_sectors.json"
+
+
+def load_stockfut_sectors(sectors_path: Path | str | None = None) -> Dict[str, str]:
+    """Load symbol -> sector mapping for Stock Futures sector concentration limits."""
+    path = Path(sectors_path) if sectors_path else SECTORS_PATH
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return {str(k).upper(): str(v).upper() for k, v in data.items() if k and v}
+    except Exception as exc:
+        logger.warning("Failed to parse stockfut sectors at %s: %s", path, exc)
+        return {}
 
 DEFAULT_STOCKFUT_CONFIG: Dict[str, Any] = {
     "stockfut_live_enabled": False,
@@ -41,6 +58,8 @@ DEFAULT_STOCKFUT_CONFIG: Dict[str, Any] = {
     "target_r_ratio": 1.6,
     "opposing_zone_atr_buffer": 0.5,
     "entry_max_drift_atr": 0.6,
+    "midday_min_r_multiple": 1.25,
+    "midday_min_sl_atr": 0.4,
     "gtt_sl_limit_buffer_atr": 0.3,
     "runner_sl_entry_buffer_atr": 0.25,
     "scoring_weights": {
