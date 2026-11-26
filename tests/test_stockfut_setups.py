@@ -148,3 +148,13 @@ def test_open_check_gates():
     ok_spread, reason_spread = open_check(row, quote={"price": 1300.0, "bid": 1290.0, "ask": 1310.0}, atr=atr)
     assert ok_spread is False
     assert "WIDE_SPREAD" in reason_spread
+
+    # Configured wider tolerances (0.6x ATR drift, 0.10% spread) allow typical overnight gap & open spread
+    ok_cfg_drift, reason_cfg_drift = open_check(
+        row,
+        quote={"price": 1315.0, "bid": 1314.5, "ask": 1315.5},
+        atr=atr,
+        max_drift_atr=0.6,
+        max_spread_pct=0.10,
+    )
+    assert ok_cfg_drift is True, reason_cfg_drift

@@ -230,7 +230,14 @@ class ReplayEngine:
                     "ask": float(curr_bar["open"]) + 0.05,
                 }
                 # Check 09:30 open gate
-                passed_open, open_reason = open_check(row, quote=quote, atr=float(curr_bar["high"]) - float(curr_bar["low"]))
+                open_atr = float(row.atr) if row.atr and row.atr > 0 else float(curr_bar["high"]) - float(curr_bar["low"])
+                passed_open, open_reason = open_check(
+                    row,
+                    quote=quote,
+                    atr=open_atr,
+                    max_drift_atr=float(self.cfg.get("entry_max_drift_atr", 0.6)),
+                    max_spread_pct=float(self.cfg.get("max_spread_pct", 0.10)),
+                )
                 if not passed_open:
                     continue
                 funnel["open_check_pass"] += 1
@@ -344,6 +351,7 @@ class ReplayEngine:
                         lots=lots,
                         lot_size=lot_size,
                         r_multiple=plan["r_t1"],
+                        atr=round(atr, 2),
                     )
                 )
 

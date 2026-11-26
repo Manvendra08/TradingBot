@@ -131,12 +131,14 @@ def test_watchlist_roundtrip():
         "r_multiple": 1.6,
         "status": "ARMED",
         "snapshot_id": "snap-infy-1",
+        "atr": 32.5,
     }
     w_id = insert_stockfut_watchlist(row_data)
     assert w_id > 0
 
     latest = get_latest_stockfut_watchlist(scan_date="2026-11-23")
-    assert any(r["symbol"] == "INFY" for r in latest)
+    infy_armed = next(r for r in latest if r["symbol"] == "INFY")
+    assert infy_armed["atr"] == 32.5
 
     update_stockfut_watchlist_status(w_id, status="TRIGGERED")
     latest_updated = get_latest_stockfut_watchlist(scan_date="2026-11-23")

@@ -226,6 +226,7 @@ def job_stockfut_morning_execution() -> None:
             r_multiple=float(r_dict["r_multiple"]),
             status=r_dict["status"],
             snapshot_id=r_dict.get("snapshot_id"),
+            atr=float(r_dict["atr"]) if r_dict.get("atr") else None,
         )
         quote = live_quotes.get(row.tradingsymbol)
         if not quote:
@@ -233,9 +234,16 @@ def job_stockfut_morning_execution() -> None:
             rejections.append({"symbol": row.symbol, "reason": "MISSING_QUOTE"})
             continue
 
-        # Open check
-        atr = abs(row.planned_entry - row.sl)
-        passed_open, open_reason = open_check(row, quote=quote, atr=atr)
+        # Open check — use stored ATR from EOD scan; fall back to SL distance
+        stored_atr = float(r_dict.get("atr") or 0.0)
+        atr = stored_atr if stored_atr > 0 else abs(row.planned_entry - row.sl)
+        passed_open, open_reason = open_check(
+            row,
+            quote=quote,
+            atr=atr,
+            max_drift_atr=float(cfg.get("entry_max_drift_atr", 0.6)),
+            max_spread_pct=float(cfg.get("max_spread_pct", 0.10)),
+        )
         if not passed_open:
             update_stockfut_watchlist_status(r_dict["id"], status="SKIPPED", skip_reason=open_reason)
             rejections.append({"symbol": row.symbol, "reason": open_reason})

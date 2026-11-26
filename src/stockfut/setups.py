@@ -46,6 +46,7 @@ class WatchRow:
     status: str = "ARMED"  # ARMED | TRIGGERED | EXPIRED | CANCELLED | SKIPPED
     skip_reason: Optional[str] = None
     snapshot_id: Optional[str] = None
+    atr: Optional[float] = None
 
 
 def stock_bias(f: Dict[str, Any]) -> int:
@@ -430,6 +431,7 @@ def build_watchlist(
             r_multiple=plan["r_t1"],
             status="ARMED",
             snapshot_id=snap.snapshot_id,
+            atr=round(atr, 2),
         )
         candidates.append(row)
 
@@ -459,6 +461,7 @@ def build_watchlist(
                 "status": row.status,
                 "skip_reason": row.skip_reason,
                 "snapshot_id": row.snapshot_id,
+                "atr": row.atr,
             })
         except Exception as e:
             log.warning("Failed persisting watchlist row for %s: %s", row.symbol, e)

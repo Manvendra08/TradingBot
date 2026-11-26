@@ -576,6 +576,7 @@ CREATE TABLE IF NOT EXISTS stockfut_watchlist (
     status              TEXT NOT NULL DEFAULT 'ARMED', -- ARMED | TRIGGERED | EXPIRED | CANCELLED | SKIPPED
     skip_reason         TEXT,
     snapshot_id         TEXT,
+    atr                 REAL,
     created_at          TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -863,6 +864,7 @@ _MIGRATIONS = [
     ("M159_idx_stockfut", "CREATE INDEX IF NOT EXISTS idx_stockfut_trades_status ON stockfut_trades (status, mode)"),
     ("M160_dedup_stockfut_watchlist", "DELETE FROM stockfut_watchlist WHERE id NOT IN (SELECT MAX(id) FROM stockfut_watchlist GROUP BY scan_date, symbol)"),
     ("M161_idx_stockfut_watchlist_unique", "CREATE UNIQUE INDEX IF NOT EXISTS uq_stockfut_watchlist_date_symbol ON stockfut_watchlist (scan_date, symbol)"),
+    ("M162_add_atr_to_stockfut_watchlist", "ALTER TABLE stockfut_watchlist ADD COLUMN atr REAL"),
 ]
 
 
@@ -3944,7 +3946,8 @@ def insert_stockfut_watchlist(row: dict) -> int:
                         lot_size = ?,
                         r_multiple = ?,
                         snapshot_id = ?,
-                        status = ?
+                        status = ?,
+                        atr = ?
                     WHERE id = ?
                     """,
                     (
@@ -3963,6 +3966,7 @@ def insert_stockfut_watchlist(row: dict) -> int:
                         float(row["r_multiple"]),
                         row.get("snapshot_id"),
                         row.get("status", "ARMED"),
+                        float(row["atr"]) if row.get("atr") else None,
                         row_id,
                     ),
                 )
@@ -3973,8 +3977,8 @@ def insert_stockfut_watchlist(row: dict) -> int:
                 INSERT INTO stockfut_watchlist (
                     scan_date, scan_time, symbol, tradingsymbol, expiry,
                     side, bias, score, planned_entry, sl, t1, t2, lots,
-                    lot_size, r_multiple, status, skip_reason, snapshot_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    lot_size, r_multiple, status, skip_reason, snapshot_id, atr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["scan_date"],
@@ -3995,6 +3999,7 @@ def insert_stockfut_watchlist(row: dict) -> int:
                     row.get("status", "ARMED"),
                     row.get("skip_reason"),
                     row.get("snapshot_id"),
+                    float(row["atr"]) if row.get("atr") else None,
                 ),
             )
             return int(cursor.lastrowid)
