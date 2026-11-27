@@ -1439,6 +1439,59 @@ def _update_live_cmps() -> None:
             )
 
 
+def _should_run_eia_recalibration(now_ist, eia_sched: dict, last_attempt_ts: float) -> bool:
+    """Return True when EIA report analysis should run (on-time or retry/backfill).
+
+    Retries every 10 minutes after the scheduled release until `eia_analyzer_recalibration`
+    is recorded for that release, and checks hourly on weekdays for any missed/delayed
+    release from the past 6 days.
+    """
+    now_ts = time.time()
+    today_str = now_ist.strftime("%Y-%m-%d")
+    is_today = bool(eia_sched.get("is_today"))
+    release_dt = eia_sched.get("scheduled_release_dt")
+
+    if is_today and release_dt is not None:
+        if now_ist < release_dt + timedelta(minutes=2):
+            return False
+        if (now_ts - last_attempt_ts) < 600.0:
+            return False
+        target_report_date = eia_sched.get("report_date") or today_str
+        try:
+            from src.models.schema import get_conn
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT actual_bcf, source FROM eia_consensus WHERE report_date = ?",
+                    (target_report_date,),
+                ).fetchone()
+                if row and row["actual_bcf"] is not None and row["source"] == "eia_analyzer_recalibration":
+                    return False
+        except Exception:
+            pass
+        return True
+
+    # Weekday backfill: catch missed/delayed reports from past 6 days (e.g. Thanksgiving 12:00 PM ET shift)
+    if now_ist.weekday() < 5 and (now_ts - last_attempt_ts) >= 3600.0:
+        try:
+            from src.models.schema import get_conn
+            min_date = (now_ist.date() - timedelta(days=6)).strftime("%Y-%m-%d")
+            with get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT report_date, actual_bcf, source
+                    FROM eia_consensus
+                    WHERE report_date <= ? AND report_date >= ?
+                    ORDER BY report_date DESC LIMIT 1
+                    """,
+                    (today_str, min_date),
+                ).fetchone()
+                if row and (row["actual_bcf"] is None or row["source"] != "eia_analyzer_recalibration"):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 def start_scheduler(immediate: bool = False):
     global _stockfut_scheduler
     from src.models.schema import delete_expired_contracts
@@ -1810,6 +1863,8 @@ def start_scheduler(immediate: bool = False):
         _last_weights_refresh_date = None
     last_ng_eia_pre_print_close_date = None
     last_ng_eia_consensus_fetch_date = None
+    _last_eia_retry_ts = 0.0
+    _last_ff_warm_ts = 0.0
     last_ng_exit_check = 0.0
     _sent_market_closed_date = None
     _last_holiday_sync_date = None
@@ -2546,42 +2601,40 @@ def start_scheduler(immediate: bool = False):
                     name="ml-training-weekly",
                 ).start()
 
-            # 5. EIA Report Job (2 min post-announcement, DST-aware & holiday-aware: 20:02 summer / 21:02 winter)
+            # 5. EIA Report Job (2 min post-announcement + retry/backfill until recalibrated)
+            if now_ist.weekday() in (2, 3, 4) and (time.time() - _last_ff_warm_ts) >= 3600.0:
+                _last_ff_warm_ts = time.time()
+                def _warm_ff():
+                    try:
+                        from src.fetchers.eia_consensus_fetcher import fetch_eia_weekly_data
+                        fetch_eia_weekly_data()
+                    except Exception:
+                        pass
+                threading.Thread(target=_warm_ff, daemon=True, name="eia-ff-warm").start()
+
             from src.engine.time_guards import get_eia_schedule
             eia_sched = get_eia_schedule(now_ist)
-            if eia_sched["is_today"]:
-                eia_h = eia_sched["release_hour"]
-                eia_m = eia_sched["release_minute"]
-                eia_report_mins = eia_h * 60 + eia_m + 2
-                is_eia_report_time = (now_ist.hour * 60 + now_ist.minute) == eia_report_mins
-                if is_eia_report_time and _last_eia_run_date != current_date:
-                    _last_eia_run_date = current_date
-                    log.info(
-                        "[scheduler] EIA Report Job triggered (%s %02d:%02d IST)",
-                        eia_sched["release_day_name"],
-                        eia_report_mins // 60,
-                        eia_report_mins % 60,
-                    )
+            if _should_run_eia_recalibration(now_ist, eia_sched, _last_eia_retry_ts):
+                _last_eia_retry_ts = time.time()
+                _last_eia_run_date = current_date
+                log.info(
+                    "[scheduler] EIA Report Job triggered (%s | target=%s)",
+                    now_ist.strftime("%A %H:%M IST"),
+                    eia_sched.get("report_date"),
+                )
 
-                    def _run_eia_analyzer():
-                        try:
-                            log.info(
-                                "[scheduler] Running EIA consensus fetch before analysis at %02d:%02d IST...",
-                                eia_report_mins // 60,
-                                eia_report_mins % 60,
-                            )
-                            from src.fetchers.eia_consensus_fetcher import fetch_and_store_eia_consensus
-                            fetch_and_store_eia_consensus()
-                            log.info("[scheduler] EIA consensus fetch finished. Starting EIA report analysis...")
+                def _run_eia_analyzer():
+                    try:
+                        from src.fetchers.eia_consensus_fetcher import fetch_and_store_eia_consensus
+                        fetch_and_store_eia_consensus()
+                        from src.engine.eia_analyzer import analyze_eia_report
+                        analyze_eia_report()
+                    except Exception as exc:
+                        log.warning("[scheduler] EIA Report analyzer failed: %s", exc)
 
-                            from src.engine.eia_analyzer import analyze_eia_report
-                            analyze_eia_report()
-                        except Exception as exc:
-                            log.warning("[scheduler] EIA Report analyzer failed: %s", exc)
-
-                    threading.Thread(
-                        target=_run_eia_analyzer, daemon=True, name="eia-analyzer"
-                    ).start()
+                threading.Thread(
+                    target=_run_eia_analyzer, daemon=True, name="eia-analyzer"
+                ).start()
 
             # 6. Daily Telegram Backup (Runs at 23:56 PM IST, Mon-Fri only; skip Sat-Sun)
             is_weekday = now_ist.weekday() < 5

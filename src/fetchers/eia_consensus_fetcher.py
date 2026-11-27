@@ -174,6 +174,7 @@ def fetch_eia_weekly_data(force_refresh: bool = False) -> dict | None:
 
                 result = {
                     "report_date": report_date,
+                    "release_datetime": date_str,
                     "consensus_bcf": forecast_val,
                     "actual_bcf": actual_val,
                     "surprise_bcf": surprise_val,
@@ -225,48 +226,79 @@ def fetch_complete_eia_dataset() -> dict | None:
             official_report_date = raw_date
 
     # CRITICAL GUARD: Only accept official actual_bcf if:
-    # 1. The official report date matches our scheduled report date, AND
-    # 2. The current time is at or after the scheduled release datetime (post-announcement).
-    # This prevents using last week's actual (e.g. Nov 5) for this week's report (e.g. Nov 13)
-    # when the release day has shifted due to holidays or DST.
-    is_released = (official_report_date == scheduled_report_date) and (now_ist >= scheduled_release_dt)
+    # 1. Official release matches today's scheduled report date AND current time >= scheduled release, OR
+    # 2. The scheduled window already rolled ahead to next week (scheduled_report_date > today_str)
+    #    and official_report_date is a recent release within the past 6 days (<= today_str),
+    #    allowing delayed/next-day backfill without ever leaking prior week's print pre-release.
+    is_released = False
+    if official_report_date and eia_official.get("actual_bcf") is not None:
+        if official_report_date == scheduled_report_date and now_ist >= scheduled_release_dt:
+            is_released = True
+        elif scheduled_report_date > today_str and official_report_date <= today_str:
+            try:
+                off_dt = datetime.strptime(official_report_date, "%Y-%m-%d").date()
+                if 0 <= (now_ist.date() - off_dt).days <= 6:
+                    is_released = True
+            except ValueError:
+                pass
 
-    if is_released and eia_official.get("actual_bcf") is not None:
+    if is_released:
         actual_bcf = eia_official["actual_bcf"]
         report_date = official_report_date
-    elif not is_released:
-        # Pre-release state: actual is not yet known!
+        # Preserve persisted consensus if Forex Factory rolled past this report_date
+        if ff_data.get("report_date") != report_date or consensus is None:
+            try:
+                with get_conn() as conn:
+                    c_row = conn.execute(
+                        "SELECT consensus_bcf FROM eia_consensus WHERE report_date = ?",
+                        (report_date,),
+                    ).fetchone()
+                    if c_row and c_row["consensus_bcf"] is not None:
+                        consensus = float(c_row["consensus_bcf"])
+            except Exception:
+                pass
+        total_storage = eia_official.get("total_storage_bcf")
+        five_yr_total = eia_official.get("five_year_total_bcf")
+        surplus_pct = eia_official.get("surplus_vs_5yr_pct")
+        year_ago_bcf = eia_official.get("year_ago_bcf")
+        pct_change_yrago = eia_official.get("pct_change_yrago")
+        rev_flag = eia_official.get("prior_week_revision_flag", 0)
+    else:
+        # Pre-release state: do not leak last week's print or balance totals into upcoming row
         actual_bcf = None
+        total_storage = None
+        five_yr_total = None
+        surplus_pct = None
+        year_ago_bcf = None
+        pct_change_yrago = None
+        rev_flag = 0
 
-    total_storage = eia_official.get("total_storage_bcf")
-    five_yr_total = eia_official.get("five_year_total_bcf")
-    surplus_pct = eia_official.get("surplus_vs_5yr_pct")
     surplus_bcf = None
     if total_storage is not None and five_yr_total is not None:
         surplus_bcf = total_storage - five_yr_total
 
-    # 3. Compute 5-year average weekly change
+    # 3. Compute 5-year average weekly change (only when released or fallback seasonal benchmark)
     five_year_avg_bcf = None
     prior_five_yr_total = None
-    try:
-        with get_conn() as conn:
-            prev_row = conn.execute(
-                """
-                SELECT five_year_total_bcf FROM eia_consensus 
-                WHERE report_date < ? AND five_year_total_bcf IS NOT NULL 
-                ORDER BY report_date DESC LIMIT 1
-                """,
-                (report_date,),
-            ).fetchone()
-            if prev_row and prev_row["five_year_total_bcf"]:
-                prior_five_yr_total = float(prev_row["five_year_total_bcf"])
-    except Exception:
-        pass
+    if is_released and five_yr_total is not None:
+        try:
+            with get_conn() as conn:
+                prev_row = conn.execute(
+                    """
+                    SELECT five_year_total_bcf FROM eia_consensus 
+                    WHERE report_date < ? AND five_year_total_bcf IS NOT NULL 
+                    ORDER BY report_date DESC LIMIT 1
+                    """,
+                    (report_date,),
+                ).fetchone()
+                if prev_row and prev_row["five_year_total_bcf"]:
+                    prior_five_yr_total = float(prev_row["five_year_total_bcf"])
+        except Exception:
+            pass
 
-    if five_yr_total is not None and prior_five_yr_total is not None:
+    if is_released and five_yr_total is not None and prior_five_yr_total is not None:
         five_year_avg_bcf = five_yr_total - prior_five_yr_total
-    else:
-        # Fallback to seasonal benchmark for this calendar week
+    elif is_released:
         cal_week = now_ist.isocalendar()[1]
         five_year_avg_bcf = _TYPICAL_5YR_WEEKLY_CHANGE.get(cal_week, season["expected_benchmark_bcf"])
 
@@ -299,7 +331,10 @@ def fetch_complete_eia_dataset() -> dict | None:
 
     # Dynamic release validity window (DST & holiday-aware)
     if is_released:
-        valid_until_dt = scheduled_release_dt + timedelta(days=7)
+        if scheduled_report_date > report_date:
+            valid_until_dt = scheduled_release_dt
+        else:
+            valid_until_dt = scheduled_release_dt + timedelta(days=7)
     else:
         valid_until_dt = scheduled_release_dt
     valid_until = valid_until_dt.astimezone(timezone.utc).isoformat()
@@ -316,10 +351,10 @@ def fetch_complete_eia_dataset() -> dict | None:
         "surplus_vs_5yr_bcf": surplus_bcf,
         "surplus_vs_5yr_pct": surplus_pct,
         "total_storage_bcf": total_storage,
-        "year_ago_bcf": eia_official.get("year_ago_bcf"),
-        "pct_change_yrago": eia_official.get("pct_change_yrago"),
+        "year_ago_bcf": year_ago_bcf,
+        "pct_change_yrago": pct_change_yrago,
         "prior_week_revised_bcf": None,
-        "prior_week_revision_flag": eia_official.get("prior_week_revision_flag", 0),
+        "prior_week_revision_flag": rev_flag,
         "seasonal_regime": season["regime"],
         "macro_stance": macro_stance,
         "stance_summary": stance_summary,

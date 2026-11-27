@@ -156,16 +156,23 @@ def get_eia_schedule(dt: datetime | None = None) -> dict:
     elif dt.tzinfo is None:
         dt = dt.replace(tzinfo=IST)
 
-    # 1. Check if Forex Factory cache has authoritative event date for this week
+    # 1. Check if Forex Factory cache has authoritative event datetime for this week
     ff_release_dt = None
     try:
         from src.fetchers.eia_consensus_fetcher import _EIA_CACHE
-        if _EIA_CACHE and _EIA_CACHE.get("report_date"):
-            rep_date_str = _EIA_CACHE["report_date"]
-            c_date = datetime.strptime(rep_date_str, "%Y-%m-%d").date()
-            if abs((c_date - dt.date()).days) <= 6:
+        if _EIA_CACHE and (_EIA_CACHE.get("release_datetime") or _EIA_CACHE.get("report_date")):
+            raw_iso = _EIA_CACHE.get("release_datetime")
+            if raw_iso and "T" in str(raw_iso):
+                parsed = datetime.fromisoformat(str(raw_iso).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = US_EASTERN.localize(parsed)
+                candidate_dt = parsed.astimezone(IST)
+            else:
+                c_date = datetime.strptime(_EIA_CACHE["report_date"], "%Y-%m-%d").date()
                 h, m = get_eia_announcement_time(dt)
-                ff_release_dt = IST.localize(datetime(c_date.year, c_date.month, c_date.day, h, m))
+                candidate_dt = IST.localize(datetime(c_date.year, c_date.month, c_date.day, h, m))
+            if abs((candidate_dt.date() - dt.date()).days) <= 6 and dt <= candidate_dt + timedelta(hours=4):
+                ff_release_dt = candidate_dt
     except Exception:
         pass
 

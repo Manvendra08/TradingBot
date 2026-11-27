@@ -64,8 +64,8 @@ def force_close_eia_pre_print() -> None:
     except Exception:
         pass
 
-def fetch_eia_actual_fallback() -> float | None:
-    """Fallback: Scrape actual net change from official EIA page."""
+def fetch_eia_actual_fallback(expected_report_date: str | None = None) -> float | None:
+    """Fallback: Scrape actual net change from official EIA page if release date matches."""
     try:
         import requests
         from bs4 import BeautifulSoup
@@ -75,6 +75,23 @@ def fetch_eia_actual_fallback() -> float | None:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
+            if expected_report_date:
+                page_text = soup.get_text(" ", strip=True)
+                rel_match = re.search(r"Released:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", page_text)
+                if not rel_match:
+                    log.warning("EIA fallback scrape missing release date header — skipping.")
+                    return None
+                try:
+                    parsed_rel = datetime.strptime(rel_match.group(1), "%B %d, %Y").strftime("%Y-%m-%d")
+                except ValueError:
+                    log.warning("EIA fallback scrape unparseable release date '%s' — skipping.", rel_match.group(1))
+                    return None
+                if parsed_rel != expected_report_date:
+                    log.info(
+                        "EIA fallback scrape date %s != expected %s — not yet published.",
+                        parsed_rel, expected_report_date,
+                    )
+                    return None
             for tr in soup.find_all("tr"):
                 cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
                 if cells and cells[0] == "Total":
@@ -99,8 +116,9 @@ def get_pre_release_price() -> float | None:
     so the reaction-override gate can still evaluate post-EIA price moves.
     """
     now_ist = datetime.now(IST)
-    from src.engine.time_guards import get_eia_announcement_time
-    eia_h, eia_m = get_eia_announcement_time(now_ist)
+    from src.engine.time_guards import get_eia_schedule
+    eia_sched = get_eia_schedule(now_ist)
+    eia_h, eia_m = eia_sched["release_hour"], eia_sched["release_minute"]
     start_ist = now_ist.replace(hour=eia_h, minute=eia_m, second=0, microsecond=0) - timedelta(minutes=20)
     start_utc = start_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     
@@ -216,9 +234,9 @@ def run_ng_eia_strategy(
             consensus = eia_full["consensus_bcf"]
         store_eia_weekly_data(eia_full)
         
-    # 2. Try fallback scrape from EIA site if needed
-    if actual is None:
-        actual = fetch_eia_actual_fallback()
+    # 2. Try date-verified fallback scrape from EIA site only post-release
+    if actual is None and eia_sched.get("is_post_release"):
+        actual = fetch_eia_actual_fallback(expected_report_date=report_date)
         
     if actual is None:
         log.info("EIA actual release not yet available. Retrying on next scan.")

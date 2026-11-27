@@ -58,10 +58,11 @@ def _get_latest_naturalgas_oi() -> dict:
     return {}
 
 
-def analyze_eia_report() -> None:
+def analyze_eia_report() -> bool:
     """
     Fetch EIA consensus & official actual data, compute 5-year seasonal metrics,
     query the unified LLM chain, recalibrate weekly stance, and dispatch Telegram alert.
+    Returns True if an official print was processed and persisted, False otherwise.
     """
     try:
         now_ist = datetime.now(_IST)
@@ -76,8 +77,8 @@ def analyze_eia_report() -> None:
         report_date = eia_data.get("report_date") or today_str
         actual = eia_data.get("actual_bcf")
         if actual is None:
-            log.warning("analyze_eia_report: EIA Actual print is not yet published. Aborting recalibration until next scan tick.")
-            return
+            log.warning("analyze_eia_report: EIA Actual print is not yet published. Aborting recalibration until retry.")
+            return False
 
         consensus = eia_data.get("consensus_bcf")
         surprise = eia_data.get("surprise_bcf")
@@ -282,7 +283,10 @@ TASK:
         # 7. Persist calibrated weekly stance into eia_consensus table (DST & holiday-aware)
         from src.engine.time_guards import get_eia_schedule
         eia_sched = get_eia_schedule(now_ist)
-        next_release_dt = eia_sched["scheduled_release_dt"] + timedelta(days=7)
+        if eia_sched["report_date"] > report_date:
+            next_release_dt = eia_sched["scheduled_release_dt"]
+        else:
+            next_release_dt = eia_sched["scheduled_release_dt"] + timedelta(days=7)
         valid_until_str = next_release_dt.astimezone(timezone.utc).isoformat()
 
         persisted_data = {
@@ -313,9 +317,11 @@ TASK:
         # 8. Dispatch alert
         send_text(alert_msg)
         log.info("EIA Report Analysis dispatched to Telegram.")
+        return True
 
     except Exception as e:
         log.error("analyze_eia_report failed: %s", e, exc_info=True)
+        return False
 
 
 if __name__ == "__main__":
