@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from config.settings import HTTP_TIMEOUT_SECONDS
+from config.settings import HTTP_TIMEOUT_SECONDS, get_strikes_around_atm
 from src.fetchers.base_fetcher import BaseFetcher, filter_atm_strikes
 
 log = logging.getLogger(__name__)
@@ -211,7 +211,11 @@ def _normalise(base: str, symbol: str, requested_expiry: Optional[str], payload:
         log.warning("[niftytrader] no valid strikes parsed for %s", base)
         return None
 
-    strikes = filter_atm_strikes(strikes, underlying_price)
+    strikes = filter_atm_strikes(
+        strikes,
+        underlying_price,
+        strikes_around_atm=get_strikes_around_atm(expiry=page_expiry),
+    )
 
     log.info(
         "[niftytrader] %s | expiry=%s underlying=%.2f strikes=%d",

@@ -23,6 +23,7 @@ from config.settings import (
     IV_SPIKE_ATM_THRESHOLD,
     MAX_PAIN_SHIFT_PCT,
     STRIKES_AROUND_ATM,
+    get_strikes_around_atm,
     SEVERITY_HIGH_MULT,
     SEVERITY_MED_MULT,
     BUILDUP_OI_MIN_PCT,
@@ -280,8 +281,9 @@ def _key_levels(strikes_data: list[dict], underlying: float) -> dict:
 # ── Strike filter ─────────────────────────────────────────────────────────────
 
 
-def _filter_atm_range(strikes_data: list[dict], underlying: float) -> list[dict]:
-    if STRIKES_AROUND_ATM <= 0:
+def _filter_atm_range(strikes_data: list[dict], underlying: float, expiry: str | None = None) -> list[dict]:
+    radius = get_strikes_around_atm(expiry=expiry)
+    if radius <= 0:
         return strikes_data
     atm = _atm_strike(strikes_data, underlying)
     sorted_strikes = sorted({r["strike"] for r in strikes_data})
@@ -289,8 +291,8 @@ def _filter_atm_range(strikes_data: list[dict], underlying: float) -> list[dict]
         idx = sorted_strikes.index(atm)
     except ValueError:
         return strikes_data
-    lo = sorted_strikes[max(0, idx - STRIKES_AROUND_ATM)]
-    hi = sorted_strikes[min(len(sorted_strikes) - 1, idx + STRIKES_AROUND_ATM)]
+    lo = sorted_strikes[max(0, idx - radius)]
+    hi = sorted_strikes[min(len(sorted_strikes) - 1, idx + radius)]
     return [r for r in strikes_data if lo <= r["strike"] <= hi]
 
 
@@ -909,7 +911,7 @@ def detect_anomalies(
             symbol, expiry, underlying, chart_indicators, "empty_strikes"
         )
 
-    filtered = _filter_atm_range(strikes, underlying)
+    filtered = _filter_atm_range(strikes, underlying, expiry=expiry)
     if not filtered:
         log.warning("[engine] empty filtered strikes | %s | expiry=%s", symbol, expiry)
         return [], _empty_scan_context(

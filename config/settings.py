@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 # Load .env from project root (works whether you run from root or a subdirectory)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
 IST = timezone(timedelta(hours=5, minutes=30))
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -248,8 +248,27 @@ TYPESAFE_API_KEY: str = os.getenv("TYPESAFE_API_KEY", "")
 DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME")
 DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD")
 
-# Strikes window around ATM (15 strikes provides ±1500 pts for BANKNIFTY/SENSEX, enabling full multi-leg wing coverage)
+# Strikes window around ATM:
+# - Weekly / near expiries (DTE <= 7): ±15 strikes (default)
+# - Monthly / far expiries (DTE > 7): ±30 strikes (±3000 pts on BANKNIFTY) so wide OTM wings stay inside chain
 STRIKES_AROUND_ATM = int(os.environ.get("STRIKES_AROUND_ATM", "15"))
+STRIKES_AROUND_ATM_MONTHLY = int(os.environ.get("STRIKES_AROUND_ATM_MONTHLY", "30"))
+
+
+def get_strikes_around_atm(expiry: str | None = None, dte: int | None = None) -> int:
+    """Return ATM strike radius; expands to STRIKES_AROUND_ATM_MONTHLY when DTE > 7."""
+    if STRIKES_AROUND_ATM <= 0:
+        return STRIKES_AROUND_ATM
+    try:
+        resolved_dte = dte
+        if resolved_dte is None and expiry:
+            exp_date = datetime.strptime(str(expiry).strip()[:10], "%Y-%m-%d").date()
+            resolved_dte = (exp_date - datetime.now(IST).date()).days
+        if resolved_dte is not None and resolved_dte > 7:
+            return max(STRIKES_AROUND_ATM, STRIKES_AROUND_ATM_MONTHLY)
+    except Exception:
+        pass
+    return STRIKES_AROUND_ATM
 
 # ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
 # Order in which fetchers are tried for each symbol.

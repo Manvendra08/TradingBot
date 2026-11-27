@@ -19,7 +19,7 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from config.settings import STRIKES_AROUND_ATM
+from config.settings import STRIKES_AROUND_ATM, get_strikes_around_atm
 from src.fetchers.base_fetcher import BaseFetcher, filter_atm_strikes
 from src.utils.greeks_calculator import GreeksCalculator
 
@@ -539,7 +539,7 @@ class KiteDataClient:
         self,
         symbol: str,
         expiry: Optional[str] = None,
-        strikes_around_atm: int = STRIKES_AROUND_ATM,
+        strikes_around_atm: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Build a normalised Option Chain matching BaseFetcher specification:
@@ -673,10 +673,15 @@ class KiteDataClient:
                 )
 
         # Find ATM strike
+        effective_strikes_around_atm = (
+            strikes_around_atm
+            if strikes_around_atm is not None
+            else get_strikes_around_atm(expiry=target_expiry)
+        )
         atm_strike = min(all_strikes, key=lambda x: abs(x - underlying_price)) if all_strikes else 0.0
         atm_idx = all_strikes.index(atm_strike) if atm_strike in all_strikes else 0
-        min_idx = max(0, atm_idx - strikes_around_atm)
-        max_idx = min(len(all_strikes), atm_idx + strikes_around_atm + 1)
+        min_idx = max(0, atm_idx - effective_strikes_around_atm)
+        max_idx = min(len(all_strikes), atm_idx + effective_strikes_around_atm + 1)
         selected_strikes_set = set(all_strikes[min_idx:max_idx])
 
         # Filter candidate contracts
@@ -746,7 +751,7 @@ class KiteDataClient:
         filtered = filter_atm_strikes(
             strikes=strikes_output,
             underlying_price=underlying_price,
-            strikes_around_atm=strikes_around_atm
+            strikes_around_atm=effective_strikes_around_atm
         )
 
         return {

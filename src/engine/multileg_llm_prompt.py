@@ -33,7 +33,7 @@ def _resolve_dte_from_expiry(expiry_str: str | None) -> int | None:
 
 
 def _format_full_option_chain(
-    option_rows: list[dict], atm_strike: float, underlying: float
+    option_rows: list[dict], atm_strike: float, underlying: float, dte: int | None = None
 ) -> str:
     """Format ALL option chain strikes (not just ATM±3).
 
@@ -55,14 +55,16 @@ def _format_full_option_chain(
 
     lines = []
     sorted_strikes = sorted(strikes.keys())
-    # Show strikes within range of ATM (±15 strikes to cover multi-leg wings)
+    # Show strikes within dynamic ATM radius (expanded to ±30 for DTE > 7 monthly wings)
+    from config.settings import get_strikes_around_atm
+    strike_radius = get_strikes_around_atm(dte=dte)
     atm_idx = 0
     for i, s in enumerate(sorted_strikes):
         if s >= atm_strike:
             atm_idx = i
             break
-    start = max(0, atm_idx - 15)
-    end = min(len(sorted_strikes), atm_idx + 16)
+    start = max(0, atm_idx - strike_radius)
+    end = min(len(sorted_strikes), atm_idx + strike_radius + 1)
 
     lines.append(f"  {'Strike':>10}  {'CE LTP':>8}  {'CE OI':>10}  {'CE Δ':>6}  {'CE IV':>6}  │  {'PE LTP':>8}  {'PE OI':>10}  {'PE Δ':>6}  {'PE IV':>6}")
     lines.append(f"  {'─'*10}  {'─'*8}  {'─'*10}  {'─'*6}  {'─'*6}  │  {'─'*8}  {'─'*10}  {'─'*6}  {'─'*6}")
@@ -609,7 +611,7 @@ OPTIONS MARKET MECHANICS (MANDATORY WRITER GROUND TRUTH — NEVER INVERT):
 {hw_section}
 {candidate_strikes_section}
 CHAIN (use only strikes with OI>0 and LTP>0):
-{_format_full_option_chain(option_rows, atm_strike, underlying)}
+{_format_full_option_chain(option_rows, atm_strike, underlying, dte=dte)}
 
 IV: {_format_iv_summary(option_rows, atm_strike)}
 Chart: 3H {float(ohlc_3h.get('open',0)):.0f}/{float(ohlc_3h.get('high',0)):.0f}/{float(ohlc_3h.get('low',0)):.0f}/{float(ohlc_3h.get('close',0)):.0f} | 1H {float(ohlc_1h.get('open',0)):.0f}/{float(ohlc_1h.get('high',0)):.0f}/{float(ohlc_1h.get('low',0)):.0f}/{float(ohlc_1h.get('close',0)):.0f}

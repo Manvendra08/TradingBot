@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pyotp
 
-from config.settings import STRIKES_AROUND_ATM, _optional_env
+from config.settings import STRIKES_AROUND_ATM, _optional_env, get_strikes_around_atm
 from src.fetchers.base_fetcher import BaseFetcher
 
 log = logging.getLogger(__name__)
@@ -1455,7 +1455,7 @@ class ShoonyaFetcher(BaseFetcher):
         if unique_strikes and underlying_price > 0:
             atm_strike = min(unique_strikes, key=lambda s: abs(s - underlying_price))
             atm_idx = unique_strikes.index(atm_strike)
-            radius = max(STRIKES_AROUND_ATM, 10)
+            radius = max(get_strikes_around_atm(expiry=target_expiry_iso), 10)
             start_idx = max(0, atm_idx - radius)
             end_idx = min(len(unique_strikes), atm_idx + radius + 1)
             selected_strikes = set(unique_strikes[start_idx:end_idx])
@@ -1844,8 +1844,9 @@ class ShoonyaFetcher(BaseFetcher):
                 )
                 atm_idx = unique_strikes.index(atm_strike)
 
-                start_idx = max(0, atm_idx - STRIKES_AROUND_ATM)
-                end_idx = min(len(unique_strikes), atm_idx + STRIKES_AROUND_ATM + 1)
+                strike_radius = get_strikes_around_atm(expiry=target_expiry_iso)
+                start_idx = max(0, atm_idx - strike_radius)
+                end_idx = min(len(unique_strikes), atm_idx + strike_radius + 1)
                 selected_strikes = set(unique_strikes[start_idx:end_idx])
 
                 contracts_to_fetch = [

@@ -4,7 +4,7 @@ import logging
 import threading
 from datetime import datetime, timezone, timedelta
 
-from config.settings import STRIKES_AROUND_ATM
+from config.settings import STRIKES_AROUND_ATM, get_strikes_around_atm
 
 from src.fetchers.base_fetcher import BaseFetcher
 
@@ -306,9 +306,10 @@ class SensibullFetcher(BaseFetcher):
             return None
         atm_pair_idx = min(valid_indices, key=lambda i: abs(pairs[i]["ce_delta"] - 0.5))
 
-        # Limit output to ATM +/- STRIKES_AROUND_ATM strikes (driven by config.settings)
-        start_idx = max(0, atm_pair_idx - STRIKES_AROUND_ATM)
-        end_idx = min(len(pairs), atm_pair_idx + STRIKES_AROUND_ATM + 1)
+        # Limit output to ATM +/- dynamic strike window (expanded for DTE > 7)
+        strike_radius = get_strikes_around_atm(expiry=target_expiry)
+        start_idx = max(0, atm_pair_idx - strike_radius)
+        end_idx = min(len(pairs), atm_pair_idx + strike_radius + 1)
         pairs = pairs[start_idx:end_idx]
         atm_pair_idx = atm_pair_idx - start_idx
 

@@ -10,7 +10,7 @@ jobs cannot create duplicate fetcher instances.
 import logging
 import threading
 
-from config.settings import STRIKES_AROUND_ATM
+from config.settings import STRIKES_AROUND_ATM, get_strikes_around_atm
 from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.dhan_sensex_fetcher import DhanSensexFetcher
@@ -186,11 +186,12 @@ def _filter_atm_strikes(result: dict, required_strikes: set[float] | None = None
             # Fallback to middle strike
             atm_strike = strikes_list[len(strikes_list) // 2]
 
-    # Keep ATM +- configured strikes (total up to 2N+1 strikes)
+    # Keep ATM +- dynamic strikes (expanded for DTE > 7; total up to 2N+1 strikes)
+    strike_radius = get_strikes_around_atm(expiry=result.get("expiry"))
     try:
         idx = strikes_list.index(atm_strike)
-        start_idx = max(0, idx - STRIKES_AROUND_ATM)
-        end_idx = min(len(strikes_list), idx + STRIKES_AROUND_ATM + 1)
+        start_idx = max(0, idx - strike_radius)
+        end_idx = min(len(strikes_list), idx + strike_radius + 1)
         kept_strikes = set(strikes_list[start_idx:end_idx])
         
         # Also keep any required strikes (e.g., from open trades)
@@ -482,9 +483,11 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
     atm_strike = min(primary_strike_vals, key=lambda x: abs(x - underlying))
     atm_idx = primary_strike_vals.index(atm_strike)
     
-    # Keep ATM ± STRIKES_AROUND_ATM
-    start_idx = max(0, atm_idx - STRIKES_AROUND_ATM)
-    end_idx = min(len(primary_strike_vals), atm_idx + STRIKES_AROUND_ATM + 1)
+    # Keep ATM ± dynamic strike radius (expanded for DTE > 7)
+    merge_expiry = primary.get("expiry") or fallback.get("expiry")
+    strike_radius = get_strikes_around_atm(expiry=merge_expiry)
+    start_idx = max(0, atm_idx - strike_radius)
+    end_idx = min(len(primary_strike_vals), atm_idx + strike_radius + 1)
     allowed_strikes = set(primary_strike_vals[start_idx:end_idx])
     
     # Build lookup maps for allowed strikes only
@@ -536,7 +539,7 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
     
     log.info(
         "[router] %s | merged %d primary + %d fallback = %d strikes (ATM ±%d)",
-        symbol, len(primary_map), len(fallback_map), len(merged["strikes"]), STRIKES_AROUND_ATM
+        symbol, len(primary_map), len(fallback_map), len(merged["strikes"]), strike_radius
     )
     
     return merged
